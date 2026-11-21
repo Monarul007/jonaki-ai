@@ -23,6 +23,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
   val lines = mutableStateListOf<ChatLine>()
+
+  /** Textbook pictures: what each figure card shows, keyed by "<answer id>|<figure number>". */
+  sealed class FigState {
+    data class Busy(val message: String) : FigState()
+    data class Done(val figure: Figure) : FigState()
+    data class None(val reason: String, val retry: Boolean) : FigState()
+  }
+  val figStates = androidx.compose.runtime.mutableStateMapOf<String, FigState>()
+  val figures = Figures(app)
   val chats = mutableStateListOf<ChatSummary>()
 
   var chatId by mutableStateOf(store.newId()); private set
@@ -263,6 +272,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     lines.add(ChatLine(answerId, Who.MODEL, "", done = false))
     busy = true
     var fixCode: String? = null
+    var findFigures: Pair<Long, String>? = null
     job = scope.launch {
       try {
         if (rebuild != null) gemma.startChat(history(rebuild))
@@ -319,7 +329,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           break
         }
         val secs = (System.currentTimeMillis() - start) / 1000.0
+        // A lesson without a picture gets one, like a textbook page (saved with the marker in it).
+        if (!testCode) update(answerId) { it.copy(text = Tutor.ensureFigure(it.text, topic)) }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
+        // Pictures are found after the answer, one at a time; never while talk mode is speaking.
+        if (!voice) findFigures = answerId to (topic ?: display)
         if (testCode) fixCode = testAnswer(answerId, codeFixed)
       } catch (t: Throwable) {
         update(answerId) { it.copy(done = true, error = friendlyError(t)) }
@@ -329,6 +343,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         status = null
         save()
         lines.getOrNull(indexOf(answerId))?.let { onAnswerDone?.invoke(it) }
+        findFigures?.let { (id, q) -> if (fixCode == null) startFigures(id, q) }
         // The code crashed: ask once for a fix, and test the fixed code too (same as agent.py _check_code).
         fixCode?.let { err ->
           sendToModel(
@@ -340,6 +355,88 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         }
       }
     }
+  }
+
+  /** What a figure card shows. Saved chats show cached pictures instantly and never re-check them. */
+  fun figState(answer: ChatLine, n: Int, query: String): FigState? {
+    val k = "${answer.id}|$n"
+    figStates[k]?.let { return it }
+    if (!answer.done) return null // still streaming: "comes when the answer is done"
+    val used = (1 until n).mapNotNull { (figStates["${answer.id}|$it"] as? FigState.Done)?.figure?.file }
+    val hit = figures.cached(query, used)
+    // Not stored here: this runs while the screen draws (the screen remembers it).
+    return if (hit != null) FigState.Done(hit) else FigState.None("no picture saved yet", retry = true)
+  }
+
+  /** Finds pictures for every figure in an answer (after it finishes). */
+  private fun startFigures(answerId: Long, question: String, only: Int? = null) {
+    val answer = lines.getOrNull(indexOf(answerId)) ?: return
+    val queries = Tutor.figureQueries(answer.text)
+    if (queries.isEmpty()) return
+    busy = true
+    job = scope.launch {
+      var usedModel = false
+      try {
+        val used = mutableListOf<String>()
+        for ((i, q) in queries.withIndex()) {
+          val n = i + 1
+          val k = "$answerId|$n"
+          val cachedHit = figures.cached(q, used)
+          if (cachedHit != null) { figStates[k] = FigState.Done(cachedHit); used.add(cachedHit.file); continue }
+          if (only != null && n != only) { (figStates[k] as? FigState.Done)?.let { used.add(it.figure.file) }; continue }
+          if (!Tools.online(app)) { figStates[k] = FigState.None("Pictures need internet", retry = true); continue }
+          figStates[k] = FigState.Busy("Finding a real picture of “$q” and checking it fits…")
+          status = "Finding a picture…"
+          val f = findOne(k, q, question, used) { usedModel = true }
+          if (f != null) { figStates[k] = FigState.Done(f); used.add(f.file) }
+        }
+      } catch (t: kotlinx.coroutines.CancellationException) {
+        figStates.keys.filter { it.startsWith("$answerId|") && figStates[it] is FigState.Busy }
+          .forEach { figStates[it] = FigState.None("stopped", retry = true) }
+        throw t
+      } finally {
+        // The picture checks used the model on their own; give the chat its memory back.
+        withContext(kotlinx.coroutines.NonCancellable) { if (usedModel) gemma.startChat(history(lines)) }
+        busy = false
+        status = null
+      }
+    }
+  }
+
+  /** One figure: search, download, let Gemma check it (YES/NO + caption), up to 3 tries. */
+  private suspend fun findOne(k: String, q: String, question: String, used: List<String>, onModel: () -> Unit): Figure? {
+    val cands = runCatching { figures.candidates(q, used, question) }.getOrDefault(emptyList())
+    if (cands.isEmpty()) { figStates[k] = FigState.None("No free picture found for this.", retry = true); return null }
+    var tried = 0
+    for (c in cands) {
+      if (tried >= Figures.MAX_TRIES) break
+      val file = runCatching { figures.download(c) }.getOrNull() ?: continue
+      tried++
+      var caption = ""
+      if (gemma.canSee) {
+        figStates[k] = FigState.Busy("Checking picture $tried of up to ${Figures.MAX_TRIES}…")
+        onModel()
+        val verdict = runCatching {
+          Figures.parseVerdict(gemma.oneShot(Figures.checkPrompt(question, q, c), 260, file.readBytes()))
+        }.getOrDefault(null to "")
+        if (verdict.first == false) { file.delete(); continue }
+        caption = verdict.second
+      }
+      if (caption.isBlank()) caption = c.desc.ifBlank { c.title } // no caption: the file's own words
+      if (c.file.isNotEmpty() && c.license.isEmpty()) withContext(Dispatchers.IO) { figures.fileLicense(c) }
+      val f = Figure(q, file.path, caption.take(600), c.title, c.page, c.file, c.license, c.credit, gemma.canSee)
+      figures.save(f)
+      return f
+    }
+    figStates[k] = FigState.None("None of the pictures found matched well enough.", retry = true)
+    return null
+  }
+
+  /** "🖼️ Find picture" on one figure card. */
+  fun findPicture(answerId: Long, n: Int) {
+    if (!canSend()) return
+    val q = lines.subList(0, indexOf(answerId).coerceAtLeast(0)).lastOrNull { it.who == Who.USER }?.let { it.topic ?: it.display } ?: ""
+    startFigures(answerId, q, only = n)
   }
 
   /** Runs one tool call and shows it as a chip (green = worked, red = failed). */

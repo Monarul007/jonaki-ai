@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -91,6 +92,8 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   val scope = rememberCoroutineScope()
   var input by rememberSaveable { mutableStateOf("") }
   var sheet by rememberSaveable { mutableStateOf(false) }
+  var viewing by remember { mutableStateOf<ViewItem?>(null) }
+  viewing?.let { Viewer(it, onClose = { viewing = null }) }
   // Text shared into the app from another app.
   LaunchedEffect(chat.sharedText) { chat.sharedText?.let { input = it; chat.sharedText = null } }
   val listState = rememberLazyListState()
@@ -170,7 +173,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
             verticalArrangement = Arrangement.spacedBy(18.dp),
           ) {
             items(chat.lines, key = { it.id }) { line ->
-              MessageItem(chat, speaker, line)
+              MessageItem(chat, speaker, line, onOpen = { viewing = it })
             }
           }
         }
@@ -180,9 +183,9 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
 }
 
 @Composable
-private fun MessageItem(chat: ChatController, speaker: Speaker, line: ChatLine) {
+private fun MessageItem(chat: ChatController, speaker: Speaker, line: ChatLine, onOpen: (ViewItem) -> Unit) {
   when (line.who) {
-    Who.USER -> UserBubble(line)
+    Who.USER -> UserBubble(line, onOpen)
     Who.NOTICE -> NoticeLine(line.display)
     Who.MODEL -> {
       val newest = line.id == chat.lines.lastOrNull { it.who == Who.MODEL }?.id
@@ -197,6 +200,8 @@ private fun MessageItem(chat: ChatController, speaker: Speaker, line: ChatLine) 
         onFollowup = { chat.sendTyped(it) },
         onButton = { label, prompt -> chat.sendButton(label, prompt) },
         onCheckFacts = { chat.checkFacts(line.id) },
+        chat = chat,
+        onOpen = onOpen,
       )
     }
   }
@@ -204,14 +209,23 @@ private fun MessageItem(chat: ChatController, speaker: Speaker, line: ChatLine) 
 
 @Composable
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-private fun UserBubble(line: ChatLine) {
+private fun UserBubble(line: ChatLine, onOpen: (ViewItem) -> Unit) {
   val extra = com.offlinegemma.app.ui.LocalExtraColors.current
   Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
     if (line.attachments.isNotEmpty()) {
       androidx.compose.foundation.layout.FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
         verticalArrangement = Arrangement.spacedBy(6.dp),
-      ) { line.attachments.forEach { AttachmentView(it) } }
+      ) {
+        // Tap a picture, document or voice clip to open it full screen.
+        line.attachments.forEach { a ->
+          Box(
+            Modifier.clip(MaterialTheme.shapes.medium).clickable(onClickLabel = "Open ${a.name}") {
+              onOpen(ViewItem(a.path, if (a.kind == Attachment.Kind.DOC) a.name else a.path.substringAfterLast('/'), a.name))
+            },
+          ) { AttachmentView(a) }
+        }
+      }
     }
     if (line.display.isNotBlank()) Surface(
       color = extra.userBubble,

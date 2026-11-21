@@ -127,16 +127,21 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
    * One-off question in a throwaway conversation (used to summarise old messages).
    * The open chat is closed first: the engine holds one conversation at a time.
    */
-  suspend fun oneShot(prompt: String, maxOutput: Int = 220): String = lock.withLock {
+  suspend fun oneShot(prompt: String, maxOutput: Int = 220, image: ByteArray? = null): String = lock.withLock {
     withContext(Dispatchers.IO) {
       val e = engine ?: return@withContext ""
       runCatching { conversation?.close() }
       conversation = null
       val temp = e.createConversation(
-        ConversationConfig(systemInstruction = Contents.of("You summarise conversations briefly."), samplerConfig = SAMPLER, maxOutputToken = maxOutput),
+        ConversationConfig(
+          systemInstruction = Contents.of(if (image != null) "You check pictures for a textbook." else "You summarise conversations briefly."),
+          samplerConfig = SAMPLER,
+          maxOutputToken = maxOutput,
+        ),
       )
       try {
-        temp.sendMessage(prompt).toString()
+        if (image != null) temp.sendMessage(Contents.of(Content.ImageBytes(image), Content.Text(prompt))).toString()
+        else temp.sendMessage(prompt).toString()
       } finally {
         runCatching { temp.close() }
       }

@@ -32,6 +32,8 @@ object Markdown {
     /** A live HTML demo. [closed] = false while still streaming. */
     data class Demo(val html: String, val closed: Boolean) : Block()
     data class Svg(val source: String) : Block()
+    /** A textbook picture: [query] = search words, [n] = Figure number. */
+    data class Figure(val query: String, val n: Int) : Block()
   }
 
   private val FENCE = Regex("""^\s*```\s*([\w+-]*)""")
@@ -43,8 +45,10 @@ object Markdown {
   private val OL = Regex("""^\s*(\d+)[.)]\s+(.*)$""")
 
   fun parse(src: String): List<Block> {
-    val lines = Tutor.stripNext(src.replace("\r\n", "\n")).split("\n")
+    // Markers written inside a sentence or a bullet are lifted onto their own line.
+    val lines = Tutor.stripNext(src.replace("\r\n", "\n")).replace(Tutor.FIG_INLINE, "\n\n$1\n\n").split("\n")
     val out = mutableListOf<Block>()
+    var figN = 0
     val para = mutableListOf<String>()
     fun flush() {
       if (para.isNotEmpty()) {
@@ -89,6 +93,11 @@ object Markdown {
         out.add(Block.Math(body.trim()))
         continue
       }
+      val fig = Tutor.FIG_LINE.find(line)
+      if (fig != null) {
+        flush(); out.add(Block.Figure(fig.groupValues[1].trim(), ++figN)); i++
+        continue
+      }
       val h = HEADING.find(line)
       if (h != null) {
         flush(); out.add(Block.Heading(h.groupValues[1].length, h.groupValues[2])); i++
@@ -114,7 +123,8 @@ object Markdown {
       val ol = OL.find(line)
       if (ul != null || ol != null) {
         flush()
-        if (ul != null) out.add(Block.Item(false, 0, ul.groupValues[1]))
+        // An empty bullet (its marker was lifted out) is dropped.
+        if (ul != null) { if (ul.groupValues[1].isNotBlank()) out.add(Block.Item(false, 0, ul.groupValues[1])) }
         else out.add(Block.Item(true, ol!!.groupValues[1].toIntOrNull() ?: 1, ol.groupValues[2]))
         i++
         continue

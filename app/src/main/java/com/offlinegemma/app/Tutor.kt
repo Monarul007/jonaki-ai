@@ -27,9 +27,16 @@ object Tutor {
     "When explaining a science or maths topic: be accurate, use short sections and one everyday " +
       "analogy. If unsure about a fact, say so."
 
-  // Same wording that worked on desktop; 80 -> 60 lines because phones are slower.
+  // Same words as agent.py TEACH_RULES: real pictures, like a printed textbook.
+  private const val RULE_FIGURE =
+    "Like a printed textbook, add 1 or 2 real pictures where they help: put a line on its own " +
+      "like [FIGURE: photosynthesis diagram] right after the paragraph it illustrates (2-5 English " +
+      "search words naming what the picture should show). The app finds a real picture and writes " +
+      "its caption, so do not describe the picture yourself; you may call it Figure 1."
+
+  // Demos now only on request (agent.py TEACH_RULES); 80 -> 60 lines because phones are slower.
   private const val RULE_DEMO =
-    "If a visual would help or the user asks for something interactive, add ONE small interactive " +
+    "Only if the user asks for something interactive, a simulation or something to play with, add ONE small interactive " +
       "demo in a ```html block: plain HTML with <script>, a <canvas> or <svg>, and labelled " +
       "<input type=\"range\"> sliders that change the picture live. No external files or libraries, " +
       "under 60 lines, and it must fit a 500px-wide box (width:100%, no fixed wide sizes). " +
@@ -49,7 +56,7 @@ object Tutor {
   fun wrap(userText: String, demos: Boolean, codeProblem: Boolean = false): String {
     val rules = when {
       codeProblem -> listOf(RULE_CODE)
-      looksLikeTeaching(userText) -> listOf(RULE_ACCURATE, if (demos) RULE_DEMO else RULE_NO_DEMO, RULE_NEXT)
+      looksLikeTeaching(userText) -> listOf(RULE_ACCURATE, RULE_FIGURE, if (demos) RULE_DEMO else RULE_NO_DEMO, RULE_NEXT)
       else -> return userText
     }
     return "(Answer rules: ${rules.joinToString(" ")})\n\n$userText"
@@ -91,6 +98,54 @@ object Tutor {
 
   /** The first demo's code in a reply, for the fix prompt. */
   fun firstDemo(text: String): String = split(text).filterIsInstance<Part.Demo>().firstOrNull()?.html ?: ""
+
+  // ---- Figures: [FIGURE: search words] ----
+
+  private const val FIG_WORDS = "(?:FIGURE|FIG\\.?|IMAGE|PICTURE|DIAGRAM|PHOTO)"
+  /** A marker anywhere in a line (lifted onto its own line before reading). */
+  val FIG_INLINE = Regex("[*_]*(\\[\\s*$FIG_WORDS\\s*\\d*\\s*:[^\\]\\n]{2,140}\\])[*_]*", RegexOption.IGNORE_CASE)
+  /** A marker on its own line; group 1 = the search words. */
+  val FIG_LINE = Regex("^\\s*\\[\\s*$FIG_WORDS\\s*\\d*\\s*:\\s*([^\\]\\n]+?)\\s*\\]\\s*$", RegexOption.IGNORE_CASE)
+
+  /** chat.html TEACH_JS: questions that deserve a textbook picture. */
+  private val LESSON_RX = Regex(
+    "explain|how does|how do|why does|why do|what is|what are|what happens|physics|chemi|cosmolog|biolog|" +
+      "astronom|quantum|black hole|galax|planet|atom|molecul|reaction|gravity|relativity|teach|lesson|" +
+      "diagram|anatomy|cell|volcano|earthquake|photosynth|ecosystem|evolution|electric|magnet",
+    RegexOption.IGNORE_CASE,
+  )
+
+  /** Search words from a question: "How does photosynthesis work?" -> "photosynthesis" (chat.html topicQuery). */
+  fun topicQuery(q: String): String =
+    q.replace(Regex("[?!.,\"“”]"), " ")
+      .replace(
+        Regex(
+          "\\b(please|explain|describe|tell me( about)?|teach me( about)?|show me|how|why|what|does|do|is|are|the|a|an|" +
+            "work|works|happen|happens|in simple (terms|words)|like i'?m \\d+|to me|me|about|can you|could you|with|interactive|demo)\\b",
+          RegexOption.IGNORE_CASE,
+        ),
+        " ",
+      )
+      .replace(Regex("\\s+"), " ").trim().take(80)
+
+  /**
+   * Lessons that came back without a picture get one, like a textbook page (chat.html ensureFigure).
+   * [question] is the user's own typed question (null for tutor buttons, quizzes, fixes).
+   */
+  fun ensureFigure(out: String, question: String?): String {
+    if (question == null || FIG_INLINE.containsMatchIn(out)) return out
+    if (!LESSON_RX.containsMatchIn(question) || out.length < 500) return out
+    if (Regex("```html", RegexOption.IGNORE_CASE).containsMatchIn(out) || Regex("^\\(.*\\)$").matches(out.trim())) return out
+    val q = topicQuery(question)
+    if (q.length < 3) return out
+    val tag = "[FIGURE: $q diagram]"
+    val cut = Regex("\\n\\s*\\n").find(out)?.range?.first ?: -1 // after the first paragraph
+    return if (cut > 0) out.substring(0, cut) + "\n\n" + tag + "\n" + out.substring(cut) else "$out\n\n$tag"
+  }
+
+  /** The figure search words in a reply, in order. */
+  fun figureQueries(text: String): List<String> =
+    text.replace(FIG_INLINE, "\n\n$1\n\n").lines().mapNotNull { FIG_LINE.find(it)?.groupValues?.get(1)?.trim() }
 
   // ---- NEXT line ----
 

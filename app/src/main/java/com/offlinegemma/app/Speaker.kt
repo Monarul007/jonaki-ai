@@ -20,6 +20,7 @@ fun speakable(text: String): String {
   s = s.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
   s = s.replace(Regex("https?://\\S+"), "")
   s = s.replace(Regex("""(?im)^\s*[*_]*\s*NEXT\s*[*_]*\s*:.*$"""), "")
+  s = s.replace(Tutor.FIG_INLINE, " ")
   s = s.replace(Regex("`([^`]*)`"), "$1")
   s = s.replace(Regex("(?m)^\\s*[#>|-]+\\s*"), "").replace(Regex("[*_~#|$\\\\]"), "")
   return s

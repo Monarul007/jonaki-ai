@@ -87,6 +87,8 @@ fun Answer(
   onFollowup: (String) -> Unit,
   onButton: (String, String) -> Unit,
   onCheckFacts: () -> Unit,
+  chat: ChatController? = null,
+  onOpen: (ViewItem) -> Unit = {},
 ) {
   val context = LocalContext.current
   Row(Modifier.fillMaxWidth()) {
@@ -97,7 +99,7 @@ fun Answer(
       if (line.text.isEmpty() && !line.done) {
         Shimmer()
       } else {
-        AnswerBody(line, onDemoError, onFix, canAct)
+        AnswerBody(line, onDemoError, onFix, canAct, chat, onOpen)
       }
       line.error?.let {
         Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small) {
@@ -259,7 +261,7 @@ private fun RunOutput(text: String) {
 
 /** The reply's Markdown, drawn block by block. */
 @Composable
-private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () -> Unit, canAct: Boolean) {
+private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () -> Unit, canAct: Boolean, chat: ChatController?, onOpen: (ViewItem) -> Unit) {
   val blocks = remember(line.text) { Markdown.parse(line.text) }
   val scheme = MaterialTheme.colorScheme
   val colors = Markdown.InlineColors(scheme.onSurface, scheme.surfaceContainerHigh, scheme.primary, scheme.tertiary)
@@ -284,6 +286,35 @@ private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () 
       is Markdown.Block.Math -> MathBlock(b.tex, colors)
       is Markdown.Block.Table -> TableBlock(b, colors)
       Markdown.Block.Rule -> androidx.compose.material3.HorizontalDivider(color = scheme.outlineVariant)
+      is Markdown.Block.Figure -> {
+        val k = "${line.id}|${b.n}"
+        val live = chat?.figStates?.get(k)
+        val saved = remember(k, line.done, line.text) { chat?.figState(line, b.n, b.query) }
+        val st = live ?: saved
+        FigureCard(
+          query = b.query,
+          n = b.n,
+          state = st,
+          canFind = canAct,
+          onFind = { chat?.findPicture(line.id, b.n) },
+          onOpen = { f ->
+            onOpen(
+              ViewItem(
+                path = f.img,
+                name = f.img.substringAfterLast('/'),
+                title = "Figure ${b.n} · ${f.title}",
+                caption = androidx.compose.ui.text.buildAnnotatedString {
+                  append("Figure ${b.n}. ")
+                  append(Markdown.inline(f.caption, colors))
+                  append("\n")
+                  append(figureSource(f, androidx.compose.ui.graphics.Color(0xFF9FA8FF)))
+                },
+                page = f.page,
+              ),
+            )
+          },
+        )
+      }
       is Markdown.Block.Svg -> Box(Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)) { DemoView(b.source, onError = {}) }
       is Markdown.Block.Demo -> when {
         !b.closed -> Pending("⚙️ Building an interactive demo… (${b.html.lines().size} lines so far)")
