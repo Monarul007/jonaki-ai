@@ -47,26 +47,6 @@ object ModelInfo {
   }
 }
 
-/** Tiny settings store. */
-class Prefs(context: Context) {
-  private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
-
-  var wifiOnly: Boolean
-    get() = sp.getBoolean("wifi_only", true)
-    set(v) = sp.edit().putBoolean("wifi_only", v).apply()
-
-  /** Interactive demos in tutor answers. Off by default on small phones (they are slow). */
-  fun demos(context: Context): Boolean =
-    sp.getBoolean("demos", ModelInfo.totalRamBytes(context) >= ModelInfo.MIN_RAM_BYTES)
-
-  fun setDemos(v: Boolean) = sp.edit().putBoolean("demos", v).apply()
-
-  /** The load mode that worked last time, tried first next time. */
-  var lastMode: String?
-    get() = sp.getString("last_mode", null)
-    set(v) = sp.edit().putString("last_mode", v).apply()
-}
-
 fun formatBytes(bytes: Long): String = when {
   bytes >= 1_000_000_000L -> "%.2f GB".format(bytes / 1e9)
   bytes >= 1_000_000L -> "%.0f MB".format(bytes / 1e6)

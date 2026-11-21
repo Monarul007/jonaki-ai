@@ -46,11 +46,31 @@ object Tutor {
    * LiteRT-LM's system prompt is fixed for a whole chat, so the rules ride along
    * with this one message. Only the user's own words are shown on screen.
    */
-  fun wrap(userText: String, demos: Boolean): String {
-    if (!looksLikeTeaching(userText)) return userText
-    val rules = listOf(RULE_ACCURATE, if (demos) RULE_DEMO else RULE_NO_DEMO, RULE_NEXT)
+  fun wrap(userText: String, demos: Boolean, codeProblem: Boolean = false): String {
+    val rules = when {
+      codeProblem -> listOf(RULE_CODE)
+      looksLikeTeaching(userText) -> listOf(RULE_ACCURATE, if (demos) RULE_DEMO else RULE_NO_DEMO, RULE_NEXT)
+      else -> return userText
+    }
     return "(Answer rules: ${rules.joinToString(" ")})\n\n$userText"
   }
+
+  private val CODE_RX = Regex(
+    "solve|problem|leetcode|algorithm|puzzle|exercise|homework|function|\\bcode\\b|program|answer this",
+    RegexOption.IGNORE_CASE,
+  )
+  private val CODE_WORDS = Regex("code|program|function|algorithm|leetcode", RegexOption.IGNORE_CASE)
+
+  /** A coding problem, often a screenshot with "solve it" (trigger words from agent.py ROUTES "code"). */
+  fun looksLikeCodeProblem(text: String, hasImage: Boolean) =
+    CODE_RX.containsMatchIn(text) && (hasImage || CODE_WORDS.containsMatchIn(text))
+
+  // agent.py's coding-problem rule. The phone has no Python, so the answer is JavaScript,
+  // which the app runs in its sandbox and shows the output (like the PC runs Python).
+  private const val RULE_CODE =
+    "For a coding problem (often a screenshot): explain the idea in 2-4 sentences, then give ONE " +
+      "```javascript block with the full solution followed by console.log() lines that run the " +
+      "problem's examples. Write the code only once. The app runs that block and shows the output."
 
   /** Fixed tutor buttons (label, prompt). Check facts is handled specially. */
   const val CHECK_FACTS = "✅ Check facts"
@@ -62,12 +82,12 @@ object Tutor {
   )
 
   /**
-   * Same words as desktop, plus the broken code itself: a small model may have lost
-   * track of its own demo, and the code is short.
+   * Same words as the PC app. The demo's own code is always included (a small model
+   * may have lost track of it), capped at 3500 characters. No tools are offered in a fix turn.
    */
   fun fixPrompt(error: String, html: String) =
-    "The interactive demo shows this error: $error. Send the corrected full demo in one ```html block. " +
-      "Keep it short.\n\nThe demo code was:\n```html\n$html\n```"
+    "The interactive demo shows this error: $error. Here is its code:\n```html\n${html.take(3500)}\n```\n" +
+      "Fix the bug and send the corrected full demo in one ```html block. Keep everything else the same."
 
   /** The first demo's code in a reply, for the fix prompt. */
   fun firstDemo(text: String): String = split(text).filterIsInstance<Part.Demo>().firstOrNull()?.html ?: ""
@@ -140,7 +160,9 @@ object Tutor {
 
   // ---- Web search for "Check facts" (same DuckDuckGo method as agent.py web_search) ----
 
-  suspend fun webSearch(query: String, max: Int = 5): String = withContext(Dispatchers.IO) {
+  data class SearchResult(val text: String, val sources: List<Source>)
+
+  suspend fun webSearch(query: String, max: Int = 5): SearchResult = withContext(Dispatchers.IO) {
     val url = "https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8")
     val conn = (URL(url).openConnection() as HttpURLConnection).apply {
       connectTimeout = 15_000
@@ -155,6 +177,7 @@ object Tutor {
     val heads = Regex("""<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
       .findAll(page).toList()
     val out = mutableListOf<String>()
+    val found = mutableListOf<Source>()
     for ((k, m) in heads.withIndex()) {
       var link = unescape(m.groupValues[1])
       Regex("uddg=([^&]+)").find(link)?.let { link = URLDecoder.decode(it.groupValues[1], "UTF-8") }
@@ -165,10 +188,13 @@ object Tutor {
       val snip = Regex("""class="result__snippet"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
         .find(page.substring(m.range.last + 1, end))?.groupValues?.get(1)
         ?.let { unescape(it.replace(Regex("<[^>]+>"), "")).replace(Regex("\\s+"), " ").trim().take(240) } ?: ""
-      if (title.isNotEmpty()) out.add("${out.size + 1}. $title\n   $snip\n   $link")
+      if (title.isNotEmpty()) {
+        out.add("${out.size + 1}. $title\n   $snip\n   $link")
+        found.add(Source(title, link))
+      }
       if (out.size >= max) break
     }
-    if (out.isEmpty()) "No results for '$query'." else "Results for '$query':\n" + out.joinToString("\n")
+    SearchResult(if (out.isEmpty()) "No results for '$query'." else "Results for '$query':\n" + out.joinToString("\n"), found)
   }
 
   private fun unescape(s: String) = Html.fromHtml(s, Html.FROM_HTML_MODE_LEGACY).toString()

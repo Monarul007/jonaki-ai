@@ -1,0 +1,13 @@
+<resources>
+    <!-- Shown for a moment while the app starts (Android 12+ splash screen). -->
+    <style name="Theme.OfflineGemma.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/brand_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_splash</item>
+        <item name="postSplashScreenTheme">@style/Theme.OfflineGemma</item>
+    </style>
+    <style name="Theme.OfflineGemma" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/brand_bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>
