@@ -57,6 +57,15 @@ class MainActivity : ComponentActivity() {
     if (talking.value) stopTalk()
   }
 
+  override fun onResume() {
+    super.onResume()
+    // The process can be killed while another app (camera, phone call) is in front. Loading from
+    // the Activity - not only from the chat screen - means coming back always wakes the model
+    // instead of sitting on "Waking up" forever. loadModel() is safe to call repeatedly.
+    val app = application as App
+    if (ModelInfo.isDownloaded(this)) app.chat.loadModel()
+  }
+
   /**
    * Developer builds only: test commands sent from the computer with
    * `adb shell am start -n com.offlinegemma.app/.MainActivity --es <name> <value>`

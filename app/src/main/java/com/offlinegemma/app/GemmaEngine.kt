@@ -171,7 +171,12 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     private const val TAG = "GemmaEngine"
     private val SAMPLER = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0)
 
-    const val SYSTEM = "You are a helpful, friendly assistant. Keep answers short and clear."
+    const val SYSTEM =
+      "You are Jonaki AI, a helpful assistant running on the user's own device. Keep answers short " +
+        "and clear. Never reply that you have no information or cannot browse: look it up with the " +
+        "tools; if they fail or there is no internet, answer from your own knowledge and say it may " +
+        "be out of date. Do the task with sensible defaults. Ask the user a question only when it is " +
+        "truly impossible to continue."
 
     // The PC agent's voice line (agent.py build_system_prompt). On the phone it rides along only with
     // voice messages: in the fixed system prompt, Gemma started typed answers with "I hear you!".

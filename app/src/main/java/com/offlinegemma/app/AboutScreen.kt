@@ -54,7 +54,7 @@ fun AboutScreen(onBack: () -> Unit) {
     ) {
       Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         BrandMark(88.dp)
-        Text("Jonaki", style = MaterialTheme.typography.headlineSmall)
+        Text("Jonaki AI", style = MaterialTheme.typography.headlineSmall)
         Text("জোনাকি · firefly", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         Text("Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
       }
@@ -73,9 +73,9 @@ fun AboutScreen(onBack: () -> Unit) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
           Text("Your privacy", style = MaterialTheme.typography.titleMedium)
           Text(
-            "Gemma runs on this phone. Your chats, photos, files and voice never leave it. " +
-              "The only exceptions: downloading the model once, and web search when you or Gemma use it " +
-              "(the search words go to DuckDuckGo, and pages Gemma reads are fetched from their websites). " +
+            "Jonaki AI runs on this phone. Your chats, photos, files and voice never leave it. " +
+              "The only exceptions: downloading the model once, and web search when you or Jonaki AI use it " +
+              "(the search words go to DuckDuckGo, and pages Jonaki AI reads are fetched from their websites). " +
               "You can turn web search off in Settings.",
             style = MaterialTheme.typography.bodyMedium,
           )

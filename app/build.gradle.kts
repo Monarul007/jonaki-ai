@@ -20,9 +20,9 @@ android {
         applicationId = "com.offlinegemma.app"
         minSdk = 31
         targetSdk = 36
-        manifestPlaceholders["appLabel"] = "Jonaki"
-        versionCode = 2
-        versionName = "1.0.0"
+        manifestPlaceholders["appLabel"] = "Jonaki AI"
+        versionCode = 3
+        versionName = "1.0.1"
     }
 
     signingConfigs {
@@ -40,7 +40,7 @@ android {
         debug {
             // Test builds install next to the real app (different name and id).
             applicationIdSuffix = ".dev"
-            manifestPlaceholders["appLabel"] = "Jonaki Dev"
+            manifestPlaceholders["appLabel"] = "Jonaki AI Dev"
         }
         release {
             isMinifyEnabled = true
@@ -89,6 +89,12 @@ dependencies {
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    // In-app camera: the phone's camera app is what makes MIUI's camera booster kill us.
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
     // Reads the text inside PDFs, on the phone (Apache 2.0).
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 

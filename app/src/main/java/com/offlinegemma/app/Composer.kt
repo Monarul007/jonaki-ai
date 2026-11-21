@@ -53,10 +53,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,8 +63,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
-import java.io.File
 
 /** The bottom of the chat: attachment previews, the message box, attach, talk and send buttons. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -78,20 +73,19 @@ fun Composer(
   onText: (String) -> Unit,
   onSend: () -> Unit,
   onTalk: () -> Unit,
+  onCamera: () -> Unit,
   sheetOpen: Boolean,
   onSheet: (Boolean) -> Unit,
 ) {
   val context = LocalContext.current
-  var cameraUri by remember { mutableStateOf<Uri?>(null) }
 
   val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
     uris.forEach { chat.addImage(it) }
-  }
-  val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
-    if (ok) cameraUri?.let { chat.addImage(it) }
+    KeepAliveService.end(context)
   }
   val files = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
     uris.forEach { chat.addFile(it) }
+    KeepAliveService.end(context)
   }
 
   if (sheetOpen) {
@@ -100,17 +94,18 @@ fun Composer(
         Text("Add to your message", Modifier.padding(horizontal = 24.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
         SheetItem(Icons.Rounded.PhotoCamera, "Camera", "Take a photo") {
           onSheet(false)
-          val f = File(context.cacheDir, "camera").apply { mkdirs() }.let { File(it, "photo_${System.currentTimeMillis()}.jpg") }
-          val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", f)
-          cameraUri = uri
-          camera.launch(uri)
+          // The preview lives in this app. Launching the phone's camera app made MIUI's camera
+          // booster SIGKILL us (model included) before the photo came back.
+          onCamera()
         }
         SheetItem(Icons.Rounded.PhotoLibrary, "Photos", "Pick pictures or screenshots") {
           onSheet(false)
+          KeepAliveService.begin(context, "Choosing photos")
           photos.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
         }
         SheetItem(Icons.Rounded.Description, "Files", "PDF, Word, PowerPoint, Excel, CSV, text, code") {
           onSheet(false)
+          KeepAliveService.begin(context, "Choosing a file")
           files.launch(Attachments.DOC_MIME_TYPES)
         }
         val clipImage = remember { clipboardImage(context) }
@@ -151,7 +146,7 @@ fun Composer(
             value = text,
             onValueChange = onText,
             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-            placeholder = { Text(if (chat.ready) "Ask Gemma anything" else "Gemma is waking up…") },
+            placeholder = { Text(if (chat.ready) "Ask Jonaki AI anything" else "Jonaki AI is waking up…") },
             maxLines = 5,
             colors = TextFieldDefaults.colors(
               focusedContainerColor = Color.Transparent,
@@ -175,7 +170,7 @@ fun Composer(
             onClick = onTalk,
             enabled = chat.ready,
             modifier = Modifier.size(56.dp),
-          ) { Icon(Icons.Rounded.GraphicEq, "Talk mode: speak with Gemma") }
+          ) { Icon(Icons.Rounded.GraphicEq, "Talk mode: speak with Jonaki AI") }
           else -> FilledIconButton(
             onClick = onSend,
             enabled = chat.ready && !chat.importing,

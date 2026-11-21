@@ -70,8 +70,8 @@ private fun label(s: TalkController.State) = when (s) {
 private fun hint(s: TalkController.State, headphones: Boolean) = when (s) {
   TalkController.State.LISTENING -> "Just start talking"
   TalkController.State.RECORDING -> "Pause when you're done"
-  TalkController.State.THINKING -> "Gemma is working on a reply · tap the orb to stop"
-  TalkController.State.SPEAKING -> if (headphones) "Talk over Gemma to interrupt" else "Tap the orb to interrupt"
+  TalkController.State.THINKING -> "Jonaki AI is working on a reply · tap the orb to stop"
+  TalkController.State.SPEAKING -> if (headphones) "Talk over Jonaki AI to interrupt" else "Tap the orb to interrupt"
   TalkController.State.OFF -> ""
 }
 
@@ -90,7 +90,7 @@ fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
       Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("Talk with Gemma", style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
+        Text("Talk with Jonaki AI", style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
         Icon(Icons.Rounded.Headphones, null, tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
         Text(" Best with headphones", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
       }
@@ -101,7 +101,7 @@ fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
         talk.level,
         Modifier.size(260.dp).clip(CircleShape).clickable(
           enabled = canInterrupt,
-          onClickLabel = "Interrupt Gemma",
+          onClickLabel = "Interrupt Jonaki AI",
           role = androidx.compose.ui.semantics.Role.Button,
         ) { talk.interrupt() },
       )

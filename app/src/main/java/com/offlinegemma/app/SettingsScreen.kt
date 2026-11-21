@@ -82,7 +82,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       }
 
       Section("Answers")
-      SwitchRow(Icons.Rounded.Build, "Tools (agent mode)", "Gemma may search the web and test code to give better answers.", prefs.agent) { prefs.agent = it }
+      SwitchRow(Icons.Rounded.Build, "Tools (agent mode)", "Jonaki AI may search the web and test code to give better answers.", prefs.agent) { prefs.agent = it }
       SwitchRow(Icons.Rounded.Language, "Web search", "The only thing that uses the internet. Your question is sent to DuckDuckGo.", prefs.webSearch) { prefs.webSearch = it }
       SwitchRow(
         Icons.Rounded.Science, "Interactive demos",
@@ -96,7 +96,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
         Column(Modifier.weight(1f)) {
           Text("Answer language", style = MaterialTheme.typography.bodyLarge)
           Text(
-            if (prefs.answerBengali) "Gemma always answers in Bengali (বাংলা)." else "Gemma answers in English (or the language you write in).",
+            if (prefs.answerBengali) "Jonaki AI always answers in Bengali (বাংলা)." else "Jonaki AI answers in English (or the language you write in).",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
           )
@@ -155,7 +155,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
     AlertDialog(
       onDismissRequest = { confirmModel = false },
       title = { Text("Delete the model?") },
-      text = { Text("This frees ${formatBytes(ModelInfo.SIZE_BYTES)}. Your chats stay, but you need to download the model again to use Gemma.") },
+      text = { Text("This frees ${formatBytes(ModelInfo.SIZE_BYTES)}. Your chats stay, but you need to download the model again to use Jonaki AI.") },
       confirmButton = {
         TextButton(onClick = {
           confirmModel = false

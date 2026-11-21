@@ -4,8 +4,10 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.text.Html
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -19,14 +21,74 @@ object Tools {
   const val TC_OPEN = "<tool_call>"
   const val TC_CLOSE = "</tool_call>"
 
-  /** agent.py ROUTES "web": words that mean the answer may need the internet. */
+  /**
+   * agent.py ROUTES "web": words that mean the answer may need the internet.
+   * A link typed by the user also counts (see [findLinks]); both route to the web tools
+   * even when agent mode is off.
+   */
   private val WEB_RX = Regex(
-    "search|google|latest|news|today|current|price|weather|who is|what is|when did|" +
-      "https?://|www\\.|website|web ?page|online|internet|look up|find out|release|version",
+    """latest|news|today|tonight|yesterday|this week|this month|this year|right now|currently|current|""" +
+      """price of|price|weather|forecast|score|who won|search|look up|google|find out|release|version|""" +
+      """who is|what is|when did|where is|how much|breaking|trending|update|""" +
+      """https?://|www\.|website|web ?page|online|internet""",
     RegexOption.IGNORE_CASE,
   )
 
   fun wantsWeb(text: String) = WEB_RX.containsMatchIn(text)
+
+  // Links typed by the user: full URLs or bare names like "monarul.pro.bd".
+  // File names ("calc.py", "plan.docx") are not websites (agent.py find_links).
+  private val FILE_TLDS = Regex(
+    """(py|js|ts|tsx|jsx|md|json|csv|tsv|txt|pdf|docx?|xlsx?|pptx?|html?|css|php|png|jpe?g|gif|""" +
+      """webp|svg|bmp|wav|mp3|mp4|ogg|exe|zip|rar|log|ya?ml|toml|ini|cfg|bat|cmd|ps1|sh|kt|java|""" +
+      """cpp|go|rs|rb|lock|xml|sql|db|env|apk|ipynb)""",
+    RegexOption.IGNORE_CASE,
+  )
+  private val LINK_RX = Regex(
+    """(https?://[^\s<>"'`)\]]+)|(?<![@\w/.-])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+""" +
+      """[a-z]{2,24})(/[^\s<>"'`)\]]*)?(?![\w@-])""",
+    RegexOption.IGNORE_CASE,
+  )
+  private val LINK_FILLER = setOf(
+    "analyze", "analyse", "analysis", "review", "summarize", "summarise", "summary", "check",
+    "visit", "open", "read", "tell", "about", "website", "site", "page", "this", "that",
+    "please", "what", "the", "and", "can", "you", "for", "from", "with", "give", "full",
+    "details", "detail", "link", "url",
+  )
+
+  /** Website addresses in the user's own words, at most [limit] of them. */
+  fun findLinks(text: String, limit: Int = 2): List<String> {
+    val out = mutableListOf<String>()
+    for (m in LINK_RX.findAll(text)) {
+      val url = if (m.groups[1] != null) {
+        m.groupValues[1].trimEnd('.', ',', ';', ':', '!', '?')
+      } else {
+        val host = m.groupValues[2]
+        if (FILE_TLDS.matches(host.substringAfterLast('.')) || host.lowercase().startsWith("uploads.")) continue
+        "https://" + host + m.groupValues[3].trimEnd('.', ',', ';', ':', '!', '?').let { if (it == "/") "" else it }
+      }
+      if (url !in out) out.add(url)
+      if (out.size >= limit) break
+    }
+    return out
+  }
+
+  /** What to look for on a linked page; blank = read the page from the top (agent.py _link_query). */
+  fun linkQuery(text: String): String {
+    val rest = LINK_RX.replace(text, " ")
+    val words = Regex("""[^\W\d_]{3,}""").findAll(rest.lowercase())
+      .map { it.value }.filter { it !in LINK_FILLER }.toList()
+    return if (words.size >= 2) words.take(12).joinToString(" ") else " "
+  }
+
+  /** agent.py REFUSAL_RX: "I don't have information / cannot browse". Never the final word. */
+  val REFUSAL_RX = Regex(
+    """(don'?t|do not|cannot|can'?t|unable to|not able to)\s+(have|access|browse|open|visit|""" +
+      """retrieve|find|look up)[^.\n]{0,80}(information|internet|real[- ]time|website|web|details|""" +
+      """data|link|url|page|site)|knowledge cut-?off|as an ai( language)? model|""" +
+      """(no|not have any) (specific |real-time |current )?information (about|on)""",
+    RegexOption.IGNORE_CASE,
+  )
 
   fun online(context: Context): Boolean {
     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -45,6 +107,8 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
 
 ## Rules
 - If the answer may be recent or you are not sure, use web_search, then web_fetch a good link. Name the source link in your answer.
+- Never reply that you have no information or cannot browse. Look it up with the tools; if they fail or there is no internet, answer from your own knowledge and say it may be out of date.
+- Do the task with sensible defaults. Ask the user a question only when it is truly impossible to continue.
 - After tool results arrive, answer the user clearly. If no tool is needed, just answer.
 """.trim()
 
@@ -99,7 +163,7 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
 
   data class Page(val title: String, val text: String)
 
-  suspend fun webFetch(url0: String, query: String, maxChars: Int = 3000): Page = withContext(Dispatchers.IO) {
+  suspend fun webFetch(context: Context, url0: String, query: String, maxChars: Int = 3000): Page = withContext(Dispatchers.IO) {
     val url = if (Regex("^https?://").containsMatchIn(url0)) url0 else "https://$url0"
     val conn = (URL(url).openConnection() as HttpURLConnection).apply {
       connectTimeout = 15_000
@@ -107,11 +171,28 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
       instanceFollowRedirects = true
       setRequestProperty("User-Agent", UA)
     }
-    val raw = try {
-      conn.inputStream.use { s -> s.readNBytes(3_000_000) }.toString(Charsets.UTF_8)
+    val (ctype, bytes) = try {
+      (conn.contentType.orEmpty() to conn.inputStream.use { s -> s.readNBytes(3_000_000) })
     } finally {
       conn.disconnect()
     }
+    // A PDF goes through the phone's document reader, like an attached file.
+    if ("pdf" in ctype.lowercase() || url.lowercase().substringBefore('?').endsWith(".pdf")) {
+      val f = File(context.cacheDir, "web_${UUID.randomUUID().toString().take(8)}.pdf")
+      try {
+        f.writeBytes(bytes)
+        val text = Attachments.extractText(context, f, "page.pdf", "application/pdf")
+        return@withContext Page(
+          url,
+          if (text.replace(Regex("\\[page \\d+/\\d+]"), "").isBlank())
+            "This PDF has no text layer (it is probably scanned pictures). Try another result."
+          else text.take(maxChars),
+        )
+      } finally {
+        f.delete()
+      }
+    }
+    val raw = bytes.toString(Charsets.UTF_8)
     val title = Regex("<title[^>]*>(.*?)</title>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).find(raw)
       ?.groupValues?.get(1)?.let { unescape(it).trim().take(90) } ?: url
     val lines = if ("<" in raw.take(2000)) htmlToLines(raw) else raw.lines()
