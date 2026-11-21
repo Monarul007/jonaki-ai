@@ -96,7 +96,7 @@ private fun WelcomePage(onNext: () -> Unit) {
     Text("Your own AI,\nright on this phone", style = MaterialTheme.typography.displaySmall, textAlign = TextAlign.Center)
     Spacer(Modifier.height(12.dp))
     Text(
-      "Offline Gemma runs Google's Gemma model on your phone. No account. No cloud.",
+      "Jonaki (জোনাকি, firefly) makes its own light: Google's Gemma AI runs right on your phone. No account. No cloud.",
       style = MaterialTheme.typography.bodyLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
       textAlign = TextAlign.Center,

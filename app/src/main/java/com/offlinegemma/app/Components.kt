@@ -63,7 +63,7 @@ fun BrandMark(size: Dp, modifier: Modifier = Modifier, animate: Boolean = true) 
   val t = rememberInfiniteTransition(label = "brand")
   val spin by t.animateFloat(0f, 360f, infiniteRepeatable(tween(14000, easing = LinearEasing)), label = "spin")
   val pulse by t.animateFloat(0.9f, 1.05f, infiniteRepeatable(tween(2600), RepeatMode.Reverse), label = "pulse")
-  Canvas(modifier.size(size).semantics { contentDescription = "Offline Gemma logo" }) {
+  Canvas(modifier.size(size).semantics { contentDescription = "Jonaki logo, a firefly spark" }) {
     val glow = Brush.radialGradient(
       listOf(Brand.Violet.copy(alpha = 0.35f), Brand.Teal.copy(alpha = 0.12f), Color.Transparent),
       center = center, radius = this.size.minDimension / 2,

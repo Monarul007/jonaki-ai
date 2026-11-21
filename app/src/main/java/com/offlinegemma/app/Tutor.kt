@@ -222,7 +222,7 @@ object Tutor {
     val conn = (URL(url).openConnection() as HttpURLConnection).apply {
       connectTimeout = 15_000
       readTimeout = 15_000
-      setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) OfflineGemma")
+      setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) Jonaki")
     }
     val page = try {
       conn.inputStream.bufferedReader().readText()

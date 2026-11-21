@@ -54,8 +54,20 @@ fun AboutScreen(onBack: () -> Unit) {
     ) {
       Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         BrandMark(88.dp)
-        Text("Offline Gemma", style = MaterialTheme.typography.headlineSmall)
+        Text("Jonaki", style = MaterialTheme.typography.headlineSmall)
+        Text("জোনাকি · firefly", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
         Text("Version ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      }
+      SoftCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("Why “Jonaki”?", style = MaterialTheme.typography.titleMedium)
+          Text(
+            "Jonaki (জোনাকি) is Bengali for firefly. A firefly makes its own light in the dark — no power line, " +
+              "no outside help. Small, but bright enough to find your way. This app is the same: its AI glows " +
+              "right here on your phone, even when there is no internet.",
+            style = MaterialTheme.typography.bodyMedium,
+          )
+        }
       }
       SoftCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {

@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.SdStorage
+import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -88,6 +89,20 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
         "Live science demos with sliders in tutor answers." + if (ram < ModelInfo.MIN_RAM_BYTES) " Slow on this phone (a few minutes each)." else "",
         prefs.demos,
       ) { prefs.demos = it }
+
+      Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 24.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Rounded.Translate, null, tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.size(16.dp))
+        Column(Modifier.weight(1f)) {
+          Text("Answer language", style = MaterialTheme.typography.bodyLarge)
+          Text(
+            if (prefs.answerBengali) "Gemma always answers in Bengali (বাংলা)." else "Gemma answers in English (or the language you write in).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        LanguagePill(prefs.answerBengali) { prefs.answerBengali = it }
+      }
 
       Section("Voice")
       var voiceSheet by remember { mutableStateOf(false) }

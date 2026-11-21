@@ -1,5 +1,6 @@
 package com.offlinegemma.app
 
+import androidx.compose.ui.semantics.selected
 import androidx.compose.foundation.layout.width
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -157,6 +158,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
             }
           },
           actions = {
+            LanguagePill(bengali = chat.prefs.answerBengali, onChange = { chat.prefs.answerBengali = it })
             IconButton(onClick = { chat.newChat() }, enabled = !chat.busy) { Icon(Icons.Rounded.Add, "New chat") }
           },
           colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -414,7 +416,7 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
     Row(Modifier.padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
       BrandMark(36.dp, animate = false)
       Spacer(Modifier.size(10.dp))
-      Text("Offline Gemma", style = MaterialTheme.typography.titleLarge)
+      Text("Jonaki", style = MaterialTheme.typography.titleLarge)
     }
     NavigationDrawerItem(
       label = { Text("New chat") },
@@ -499,6 +501,42 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
       confirmButton = { TextButton(onClick = { chat.deleteChat(c.id); deleting = null }) { Text("Delete") } },
       dismissButton = { TextButton(onClick = { deleting = null }) { Text("Keep") } },
     )
+  }
+}
+
+/**
+ * EN | বাং — which language Gemma answers in. Two halves of one small pill; the chosen half is filled.
+ * Lives in the top bar so it is always in reach (switching takes effect from the next message).
+ */
+@Composable
+fun LanguagePill(bengali: Boolean, onChange: (Boolean) -> Unit) {
+  val scheme = MaterialTheme.colorScheme
+  Surface(
+    shape = RoundedCornerShape(50),
+    color = scheme.surfaceContainerHigh,
+    modifier = Modifier.padding(end = 2.dp).semantics(mergeDescendants = false) {
+      contentDescription = if (bengali) "Answer language: Bengali" else "Answer language: English"
+    },
+  ) {
+    Row(Modifier.padding(3.dp)) {
+      for ((isBn, label) in listOf(false to "EN", true to "বাং")) {
+        val on = bengali == isBn
+        Surface(
+          onClick = { onChange(isBn) },
+          shape = RoundedCornerShape(50),
+          color = if (on) scheme.primary else Color.Transparent,
+          contentColor = if (on) scheme.onPrimary else scheme.onSurfaceVariant,
+          modifier = Modifier.heightIn(min = 36.dp).semantics {
+            contentDescription = if (isBn) "Answer in Bengali" else "Answer in English"
+            selected = on
+          },
+        ) {
+          Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+            Text(label, style = MaterialTheme.typography.labelLarge)
+          }
+        }
+      }
+    }
   }
 }
 

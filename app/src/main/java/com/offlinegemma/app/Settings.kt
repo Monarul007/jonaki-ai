@@ -63,6 +63,12 @@ class Prefs(context: Context) {
     get() = _voice.value
     set(v) { _voice.value = v; sp.edit().putString("voice", v).apply() }
 
+  /** Answer language: true = Gemma always answers in Bengali (বাংলা), false = English / the user's language. */
+  private val _bengali = bool("answer_bengali", false)
+  var answerBengali: Boolean
+    get() = _bengali.value
+    set(v) { _bengali.value = v; sp.edit().putBoolean("answer_bengali", v).apply() }
+
   /** Welcome screen seen. */
   private val _onboarded = bool("onboarded", false)
   var onboarded: Boolean

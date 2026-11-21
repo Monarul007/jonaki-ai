@@ -200,7 +200,7 @@ class Figures(context: Context) {
   }
 
   companion object {
-    const val UA = "OfflineGemma/1.0 (Android study app; educational figures)"
+    const val UA = "Jonaki/1.0 (Android study app; educational figures)"
     const val MAX_TRIES = 3
 
     // Diagrams translated into other languages: "Photosynthesis-ru.svg" (but "-en" is fine).

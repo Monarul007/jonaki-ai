@@ -1,4 +1,6 @@
-# Offline Gemma Phone App — Plan (Android first)
+# Jonaki Phone App — Plan (Android first)
+
+_Renamed from "Offline Gemma" on 2026-11-21. Jonaki (জোনাকি) = firefly: it makes its own light, like an AI that runs offline. The internal app ID stays `com.offlinegemma.app` so updates install over earlier builds._
 
 > **In one line:** a phone app that downloads Google's Gemma 4 E2B "brain" once,
 > then chats with you with **no internet needed** — like Google's AI Edge Gallery.

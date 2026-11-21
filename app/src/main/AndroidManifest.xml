@@ -42,7 +42,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- "Share to Offline Gemma" from other apps: pictures, documents and text. -->
+            <!-- "Share to Jonaki" from other apps: pictures, documents and text. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />

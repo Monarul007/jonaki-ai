@@ -1,6 +1,6 @@
-# Installing Offline Gemma (for internal testers)
+# Installing Jonaki (for internal testers)
 
-Offline Gemma is a chat app with its own AI (Google's Gemma). The AI runs **on your phone**:
+Jonaki (জোনাকি, "firefly") is a chat app with its own AI (Google's Gemma). The AI runs **on your phone**:
 your chats, photos and voice never leave it.
 
 ## What you need
@@ -12,14 +12,14 @@ your chats, photos and voice never leave it.
 
 ## Install it (about 2 minutes)
 
-1. Get the file **`OfflineGemma-1.0.0.apk`** from the person who shared it (Drive, email, chat…).
+1. Get the file **`Jonaki-1.0.0.apk`** from the person who shared it (Drive, email, chat…).
 2. Open the file on your phone. Your phone may say *"For your security, your phone is not allowed
    to install unknown apps from this source."* Tap **Settings**, turn on **Allow from this source**,
    then go back and tap **Install**.
    - Xiaomi / Redmi phones may show an extra warning page. Wait for the timer and tap **Install anyway**.
    - Google Play Protect may say it doesn't know this app. Tap **More details → Install anyway**.
      (This happens because the app isn't on the Play Store yet.)
-3. Open **Offline Gemma**.
+3. Open **Jonaki**.
 
 ## First launch (about 5–10 minutes on Wi-Fi)
 
@@ -62,9 +62,9 @@ Install the new `.apk` over the old one. Your chats and the downloaded AI are ke
 ### For the person who builds the app
 
 - Release file: `mobile/app/build/outputs/apk/release/app-release.apk`
-  (build with `gradlew assembleRelease` in the `mobile` folder). Rename it to `OfflineGemma-<version>.apk`.
+  (build with `gradlew assembleRelease` in the `mobile` folder). Rename it to `Jonaki-<version>.apk`.
 - It is signed with the key in `C:\Users\monar\.android-keys\` (`offlinegemma.jks` + `offlinegemma.properties`).
   **Back up that folder somewhere safe and private.** Without it you can't ship updates that install over the old app.
   Never put it in git.
 - Before each new release, raise `versionCode` and `versionName` in `app/build.gradle.kts`.
-- Test builds (`assembleDebug`) are called **Gemma Dev** and install next to the real app.
+- Test builds (`assembleDebug`) are called **Jonaki Dev** and install next to the real app.

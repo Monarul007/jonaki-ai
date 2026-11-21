@@ -20,7 +20,7 @@ android {
         applicationId = "com.offlinegemma.app"
         minSdk = 31
         targetSdk = 36
-        manifestPlaceholders["appLabel"] = "Offline Gemma"
+        manifestPlaceholders["appLabel"] = "Jonaki"
         versionCode = 2
         versionName = "1.0.0"
     }
@@ -40,7 +40,7 @@ android {
         debug {
             // Test builds install next to the real app (different name and id).
             applicationIdSuffix = ".dev"
-            manifestPlaceholders["appLabel"] = "Gemma Dev"
+            manifestPlaceholders["appLabel"] = "Jonaki Dev"
         }
         release {
             isMinifyEnabled = true

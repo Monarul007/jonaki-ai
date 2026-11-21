@@ -225,7 +225,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       if (voice) "(I said this out loud. Reply to it directly, briefly, as in a spoken conversation.)" else "(see attachment)"
     }
     val hasImage = atts.any { it.kind == Attachment.Kind.IMAGE }
-    val rules = Tutor.wrap(ask, prefs.demos, codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage))
+    val rules = inLanguage(Tutor.wrap(ask, prefs.demos, codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage)))
     val withDocs = if (docs.isEmpty()) rules else "$docs\n\n$rules"
     val hasAudio = atts.any { it.kind == Attachment.Kind.AUDIO }
     val modelText = if (hasAudio) "(${GemmaEngine.VOICE_RULE})\n\n$withDocs" else withDocs
@@ -243,8 +243,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** A tutor button such as "🧒 Simpler". */
   fun sendButton(label: String, prompt: String) {
     if (!canSend()) return
-    sendToModel(label, Tutor.wrap(prompt, prefs.demos))
+    sendToModel(label, inLanguage(Tutor.wrap(prompt, prefs.demos)))
   }
+
+  /**
+   * The BN/EN switch. In Bengali mode every message carries a short note asking for a Bengali answer
+   * (the system prompt is fixed for the whole chat, so the note rides along with each message).
+   * Code, maths and picture search words stay in English so they keep working.
+   */
+  private fun inLanguage(modelText: String) =
+    if (prefs.answerBengali) "($BENGALI_RULE)\n\n$modelText" else modelText
 
   fun notice(text: String) {
     lines.add(ChatLine(newLineId(), Who.NOTICE, text))
@@ -589,7 +597,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       status = null
       results.onSuccess { (text, found) ->
         // The answer always ends with real links (small models forget to write them).
-        sendToModel(Tutor.CHECK_FACTS, Tutor.checkFactsPrompt(text), sources = found.take(4))
+        sendToModel(Tutor.CHECK_FACTS, inLanguage(Tutor.checkFactsPrompt(text)), sources = found.take(4))
       }.onFailure {
         notice("✅ Check facts needs the internet. Connect and try again.")
       }
@@ -638,6 +646,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   companion object {
     const val CHARS_PER_TOKEN = 4
+    const val BENGALI_RULE = "Answer in Bengali (বাংলা), even if I write in English. Keep code, maths, " +
+      "[FIGURE: ...] search words and the NEXT: line's format as they are; write the NEXT questions in Bengali."
     const val MAX_TOOL_TURNS = 4
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
