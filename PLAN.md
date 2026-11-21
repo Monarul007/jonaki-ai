@@ -333,5 +333,41 @@ of the new build.
   "Get a Bengali voice" (ACTION_INSTALL_TTS_DATA) when none is installed.
 - Chat polish: one snapping follow-up row, full-width replies, 80% user bubbles, follow-only-at-bottom + "New message"
   button, long-press action sheet, sideways example cards, status-bar icons follow theme.
-- Attach "Waking up Gemma" report: not reproducible on the Redmi (process and model stayed loaded through the picker);
-  most likely the repeated test installs restarting the app. Not re-tested on the 4 GB OPPO.
+- Attach "Waking up Gemma" report: **reproduced on the Redmi with the system camera** (not with the
+  picker). MIUI's camera booster kills the app when the camera opens; see §15. The old
+  pending-capture/MediaStore recovery was fragile and has been removed.
+
+---
+
+## 15. Camera fix — the "Waking up" bug (2026-11-21, Redmi, version 1.0.1)
+
+**Root cause (measured).** Opening the phone's camera through `ACTION_IMAGE_CAPTURE` makes MIUI's
+`camopt_killer` SIGKILL our process, even while it holds a short foreground service:
+
+```
+I/camopt_killer: kill process 24039, uid 10393 with camera boost
+I/Zygote: Process 24039 exited due to signal 9 (Killed)
+dumpsys exit-info: reason=2 (SIGNALED) status=9 importance=125
+```
+
+The loaded model died with it, and the pending photo import failed on relaunch, so the app came
+back to "Waking up" with no photo.
+
+**Fix.**
+- `CameraCapture.kt`: CameraX preview, shutter and front/back switch **inside the app**. The
+  system camera app is never launched, so there is no camera-boost kill.
+- The Camera sheet item opens that screen; a captured photo becomes a draft chip immediately.
+- `MainActivity.onResume` also calls `loadModel()` (idempotent), so any future process death
+  still wakes the model instead of leaving the spinner forever.
+- Removed the pending-capture/MediaStore recovery path. `KeepAliveService` now only covers the
+  photo/file pickers and stops itself on timeout.
+- Imported photos are scaled to 1024 px and saved off the main thread.
+
+**Verified.** PID unchanged across capture (`30489`), no process-exit record, the photo landed in
+the chat folder and appeared as a draft chip, and the model stayed loaded. Unit tests pass and the
+R8 release build completes. Camera verification used the 283 MB FunctionGemma bundle (the release
+app's E2B sits in a different app UID and cannot be read by the dev build); the camera lifecycle
+is model-independent. The release APK is unsigned on this PC because the original signing key is
+not present.
+
+**Rule for the future:** never bring back `ACTION_IMAGE_CAPTURE` for photos. See `AGENTS.md`.
