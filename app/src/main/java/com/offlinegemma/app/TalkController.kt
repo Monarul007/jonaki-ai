@@ -117,8 +117,10 @@ class TalkController(private val context: Context, private val chat: ChatControl
     val rate = RATE
     val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
     val ar = try {
-      // VOICE_COMMUNICATION turns on the phone's own echo cancelling where it has one.
-      AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, max(minBuf, FRAME * 8))
+      // VOICE_RECOGNITION, not VOICE_COMMUNICATION: on Xiaomi phones the call-style echo
+      // cancelling mutes the microphone completely while the phone speaks, so you could never
+      // interrupt. Our own echo filter (VoiceDetector) keeps Gemma from hearing itself instead.
+      AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, max(minBuf, FRAME * 8))
     } catch (t: Throwable) {
       error = "The microphone is not available."
       return
@@ -128,12 +130,14 @@ class TalkController(private val context: Context, private val chat: ChatControl
       ar.release()
       return
     }
-    val aec = if (AcousticEchoCanceler.isAvailable()) runCatching { AcousticEchoCanceler.create(ar.audioSessionId)?.apply { enabled = true } }.getOrNull() else null
+    // The platform echo canceller is off for the same reason (it gates the microphone on some phones).
+    val aec: AcousticEchoCanceler? = null
     val ns = if (NoiseSuppressor.isAvailable()) runCatching { NoiseSuppressor.create(ar.audioSessionId)?.apply { enabled = true } }.getOrNull() else null
     Log.i(TAG, "Talk start: echo canceller=${aec != null}, noise suppressor=${ns != null}")
 
     running = true
     loudspeakerSafe = headphones()
+    headphonesOn = loudspeakerSafe
     vad.reset()
     moveTo(if (chat.busy) State.THINKING else State.LISTENING)
     thread = Thread({
@@ -154,6 +158,20 @@ class TalkController(private val context: Context, private val chat: ChatControl
         ns?.release()
       }
     }, "talk-mic").apply { start() }
+  }
+
+  /** On a loudspeaker the phone can't tell your voice from its own, so tapping the orb interrupts. */
+  var headphonesOn by mutableStateOf(false); private set
+
+  /** Tap to interrupt: stop speaking (and the answer), then listen. */
+  fun interrupt() {
+    if (!running || (st != State.SPEAKING && st != State.THINKING)) return
+    Log.i(TAG, "Interrupted by tap")
+    speaker.stop()
+    if (chat.busy) chat.stop()
+    answerId = null
+    vad.reset()
+    moveTo(State.LISTENING)
   }
 
   fun stop() {
@@ -178,7 +196,8 @@ class TalkController(private val context: Context, private val chat: ChatControl
       State.THINKING -> VoiceDetector.Mode.THINKING
       State.OFF -> return
     }
-    when (val e = vad.feed(x, now, mode, now - speakingSince, loudspeakerSafe)) {
+    val e = vad.feed(x, now, mode, now - speakingSince, loudspeakerSafe)
+    when (e) {
       VoiceDetector.Event.Start -> moveTo(State.RECORDING)
       VoiceDetector.Event.Discard -> moveTo(State.LISTENING)
       is VoiceDetector.Event.Finish -> finishUtterance(e.chunks)

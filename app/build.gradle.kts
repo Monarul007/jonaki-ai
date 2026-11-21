@@ -1,4 +1,11 @@
+import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+// The release key lives outside the project and is never committed.
+val keyProps = Properties().apply {
+    val f = file(System.getenv("OFFLINEGEMMA_KEY_PROPS") ?: "${System.getProperty("user.home")}/.android-keys/offlinegemma.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
 
 plugins {
     id("com.android.application")
@@ -13,13 +20,35 @@ android {
         applicationId = "com.offlinegemma.app"
         minSdk = 31
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        manifestPlaceholders["appLabel"] = "Offline Gemma"
+        versionCode = 2
+        versionName = "1.0.0"
+    }
+
+    signingConfigs {
+        if (keyProps.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(keyProps.getProperty("storeFile"))
+                storePassword = keyProps.getProperty("storePassword")
+                keyAlias = keyProps.getProperty("keyAlias")
+                keyPassword = keyProps.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
+        debug {
+            // Test builds install next to the real app (different name and id).
+            applicationIdSuffix = ".dev"
+            manifestPlaceholders["appLabel"] = "Gemma Dev"
+        }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
+            // Real phones are 64-bit ARM; the x86_64 engine is only for the computer's emulator.
+            ndk { abiFilters += "arm64-v8a" }
         }
     }
     compileOptions {
@@ -31,7 +60,11 @@ android {
         buildConfig = true
     }
     testOptions { unitTests.isReturnDefaultValues = true }
-    packaging { jniLibs { pickFirsts.add("**/liblitertlm_jni.so") } }
+    packaging {
+        jniLibs { pickFirsts.add("**/liblitertlm_jni.so") }
+        // Post-quantum crypto tables pulled in by the PDF reader's encryption support; never used here.
+        resources { excludes += "org/bouncycastle/pqc/**" }
+    }
 }
 
 kotlin {

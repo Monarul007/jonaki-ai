@@ -12,3 +12,4 @@ signing.properties
 *.apk
 *.aab
 shots-*.png
+dist/

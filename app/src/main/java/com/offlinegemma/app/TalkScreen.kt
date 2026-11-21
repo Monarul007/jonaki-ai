@@ -14,6 +14,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,11 +67,11 @@ private fun label(s: TalkController.State) = when (s) {
   TalkController.State.SPEAKING -> "Speaking…"
 }
 
-private fun hint(s: TalkController.State) = when (s) {
+private fun hint(s: TalkController.State, headphones: Boolean) = when (s) {
   TalkController.State.LISTENING -> "Just start talking"
   TalkController.State.RECORDING -> "Pause when you're done"
-  TalkController.State.THINKING -> "Gemma is working on a reply"
-  TalkController.State.SPEAKING -> "Talk over Gemma to interrupt"
+  TalkController.State.THINKING -> "Gemma is working on a reply · tap the orb to stop"
+  TalkController.State.SPEAKING -> if (headphones) "Talk over Gemma to interrupt" else "Tap the orb to interrupt"
   TalkController.State.OFF -> ""
 }
 
@@ -92,7 +95,16 @@ fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
         Text(" Best with headphones", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
       }
       Spacer(Modifier.weight(1f))
-      Orb(talk.state, talk.level, Modifier.size(260.dp))
+      val canInterrupt = talk.state == TalkController.State.SPEAKING || talk.state == TalkController.State.THINKING
+      Orb(
+        talk.state,
+        talk.level,
+        Modifier.size(260.dp).clip(CircleShape).clickable(
+          enabled = canInterrupt,
+          onClickLabel = "Interrupt Gemma",
+          role = androidx.compose.ui.semantics.Role.Button,
+        ) { talk.interrupt() },
+      )
       Spacer(Modifier.height(36.dp))
       AnimatedContent(talk.state, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "label") { s ->
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -102,7 +114,7 @@ fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
             color = Color.White,
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
           )
-          Text(hint(s), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.6f))
+          Text(hint(s, talk.headphonesOn), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.6f))
         }
       }
       Spacer(Modifier.height(20.dp))

@@ -281,3 +281,31 @@ adb shell run-as com.offlinegemma.app cp /data/local/tmp/gemma.litertlm files/mo
 - Model files: <https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm>
 - Gallery app + model list (`model_allowlists/1_0_23.json`): <https://github.com/google-ai-edge/gallery>
 - Play target API rule: <https://developer.android.com/google/play/requirements/target-sdk>
+
+## 12. Production build (2026-11-21) — results on a REDMI Note 15 Pro+ (8 GB, Snapdragon 7s Gen 3, Android 16)
+
+| Milestone | What | Tested on phone |
+|---|---|---|
+| M3 Look | Brand theme (light/dark, wallpaper colours), icon, splash, welcome + download screens, saved chats (rename/delete), settings, about/licences | ✅ |
+| M4 Answers | Markdown, code copy, maths/TeX, tables; copy / regenerate / read-aloud; compacting old messages; Check facts with Sources | ✅ (compacting only by unit logic) |
+| M5 Pictures & files | Camera, photos (system picker), files (PDF/Office/CSV/text, ~5000 chars), paste, share-into-app; "solve it" on screenshots + JavaScript auto-test with one automatic fix | ✅ photo picker, screenshot solve, code test · ⏳ camera, documents, share |
+| M6 Talk mode | 16 kHz mic, voice detection (PC numbers), sentence-by-sentence speech, aurora orb | ✅ loop 1.6–4 s from end of speech to first spoken words (PC ~15 s full loop) |
+| M7 Tools | `<tool_call>` text protocol + forgiving parser, Go-ahead / answer nudges, web_search + web_fetch, green/red chips, sources, offline message | ✅ web search answer with 4 sources in 25 s |
+| M8 Release | R8 shrink (139 MB → 30 MB, arm64 only), signed with key outside the repo, 20 JVM unit tests, INSTALL.md | ✅ release APK installed, downloaded the model (3.5 min) and ran |
+
+Model load: 18–30 s on the GPU with image + audio.
+
+**Talk mode lesson (loudspeaker):** with the call-style microphone (VOICE_COMMUNICATION + platform echo
+canceller) Xiaomi mutes the mic completely while the phone speaks, so talking over Gemma could never work.
+With the plain VOICE_RECOGNITION mic, Gemma's own echo (peaks 0.04–0.06) is about as loud as the user's
+voice at arm's length (~0.06), so voice interrupting can't be told apart from echo. Result:
+- headphones → talk over Gemma to interrupt (PC rule);
+- loudspeaker → **tap the orb to interrupt** (instant); voice interrupt still allowed but needs to be clearly
+  louder than the learned echo, so the app never interrupts itself (verified: no false interrupts).
+
+**R8 lesson:** WorkManager's Room database must be kept (`-keep class * extends androidx.room.RoomDatabase { <init>(); }`),
+or the release app crashes at start.
+
+Not done / next: native LiteRT-LM tool calls (text protocol only for now), Python (Chaquopy) skipped —
+JavaScript covers code tests; camera/document/share paths not yet tried on the phone; OPPO 4 GB smoke test
+of the new build.
