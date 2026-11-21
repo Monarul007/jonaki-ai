@@ -188,7 +188,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     scope.launch {
       runCatching { block() }
         .onSuccess { draft.addAll(it) }
-        .onFailure { notice("Could not add that file: ${it.message}") }
+        .onFailure {
+          android.util.Log.w("ChatController", "Import failed", it)
+          notice("Couldn't open that file. Try adding it again with the + button.")
+        }
       importing = false
     }
   }
@@ -218,7 +221,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val hasAudio = atts.any { it.kind == Attachment.Kind.AUDIO }
     val modelText = if (hasAudio) "(${GemmaEngine.VOICE_RULE})\n\n$withDocs" else withDocs
     val display = text.ifBlank { if (voice) "🎤 Voice message" else "" }
-    sendToModel(display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice)
+    val codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage)
+    sendToModel(display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice, testCode = codeProblem)
   }
 
   /** A tutor button such as "🧒 Simpler". */
@@ -243,12 +247,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     sources: List<Source> = emptyList(),
     attachments: List<Attachment> = emptyList(),
     voice: Boolean = false,
+    testCode: Boolean = false,
+    codeFixed: Boolean = false,
   ) {
     val userLine = ChatLine(newLineId(), Who.USER, modelText, display, topic = topic, attachments = attachments)
     lines.add(userLine)
     val answerId = newLineId()
     lines.add(ChatLine(answerId, Who.MODEL, "", done = false))
     busy = true
+    var fixCode: String? = null
     job = scope.launch {
       try {
         if (rebuild != null) gemma.startChat(history(rebuild))
@@ -268,6 +275,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
         val secs = (System.currentTimeMillis() - start) / 1000.0
         update(answerId) { it.copy(done = true, seconds = secs, sources = sources) }
+        if (testCode) fixCode = testAnswer(answerId, codeFixed)
       } catch (t: Throwable) {
         update(answerId) { it.copy(done = true, error = friendlyError(t)) }
       } finally {
@@ -276,8 +284,38 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         status = null
         save()
         lines.getOrNull(indexOf(answerId))?.let { onAnswerDone?.invoke(it) }
+        // The code crashed: ask once for a fix, and test the fixed code too (same as agent.py _check_code).
+        fixCode?.let { err ->
+          sendToModel(
+            "🔧 Fix the code (automatic)",
+            "I ran your code and it failed:\n${err.takeLast(1200)}\nGive the corrected full code in one ```javascript block. Keep it short.",
+            testCode = true,
+            codeFixed = true,
+          )
+        }
       }
     }
+  }
+
+  /**
+   * Runs the answer's JavaScript the way a careful person would and shows the output as a tool chip.
+   * Returns the error when it crashed and no fix was tried yet.
+   */
+  private suspend fun testAnswer(answerId: Long, alreadyFixed: Boolean): String? {
+    val answer = lines.getOrNull(indexOf(answerId))?.text ?: return null
+    val code = JsRunner.codeIn(answer) ?: return null
+    if (!JsRunner.runnable(code)) return null
+    status = "Testing the code…"
+    update(answerId) { it.copy(tools = it.tools + ToolUse("run_js", "running your code")) }
+    val r = JsRunner.run(app, code)
+    update(answerId) {
+      it.copy(
+        tools = it.tools.dropLast(1) + ToolUse("run_js", "running your code", r.ok, r.output),
+        runOutput = (if (r.ok) "✅ Tested — output when run:\n" else if (alreadyFixed) "❌ It still fails:\n" else "❌ The code crashed — asking for a fix:\n") + r.output.take(1500),
+      )
+    }
+    status = null
+    return if (!r.ok && !alreadyFixed) r.output else null
   }
 
   /** Talk mode and read-aloud listen to answers as they stream. */

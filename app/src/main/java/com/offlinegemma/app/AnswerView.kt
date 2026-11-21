@@ -250,8 +250,9 @@ private fun Sources(sources: List<Source>) {
 private fun RunOutput(text: String) {
   Surface(color = MaterialTheme.colorScheme.surfaceContainerLow, shape = MaterialTheme.shapes.small) {
     Column(Modifier.padding(12.dp)) {
-      Text("Output", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-      Text(text, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+      val head = text.substringBefore('\n')
+      Text(head, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      Text(text.substringAfter('\n', ""), fontFamily = FontFamily.Monospace, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
     }
   }
 }
