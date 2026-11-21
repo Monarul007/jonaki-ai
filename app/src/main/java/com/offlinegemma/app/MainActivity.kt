@@ -78,6 +78,13 @@ class MainActivity : ComponentActivity() {
       }
     }
     if (intent.hasExtra("new_chat")) app.chat.newChat()
+    // Talk-mode echo test: a typed question whose reply is spoken, as if it was said out loud.
+    intent.getStringExtra("talk_say")?.let { q ->
+      lifecycleScope.launch {
+        while (!app.chat.canSend()) kotlinx.coroutines.delay(500)
+        app.chat.sendTyped(q, voice = true)
+      }
+    }
     if (intent.hasExtra("talk")) { if (intent.getStringExtra("talk") == "off") stopTalk() else startTalk() }
     intent.getStringExtra("open_chat")?.let { idx -> app.chat.chats.getOrNull(idx.toIntOrNull() ?: 0)?.let { app.chat.openChat(it.id) } }
     intent.replaceExtras(Bundle())

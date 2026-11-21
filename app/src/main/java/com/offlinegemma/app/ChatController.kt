@@ -222,7 +222,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val modelText = if (hasAudio) "(${GemmaEngine.VOICE_RULE})\n\n$withDocs" else withDocs
     val display = text.ifBlank { if (voice) "🎤 Voice message" else "" }
     val codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage)
-    sendToModel(display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice, testCode = codeProblem)
+    // Agent mode: offer the web tools when the question sounds like it needs the internet (agent.py ROUTES).
+    var agent = prefs.agent && prefs.webSearch && !codeProblem && text.isNotBlank() && Tools.wantsWeb(text)
+    if (agent && !Tools.online(app)) {
+      agent = false
+      notice("📴 You're offline, so Gemma answers from what it already knows (no web search).")
+    }
+    sendToModel(display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice, testCode = codeProblem, agent = agent)
   }
 
   /** A tutor button such as "🧒 Simpler". */
@@ -249,6 +255,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     voice: Boolean = false,
     testCode: Boolean = false,
     codeFixed: Boolean = false,
+    agent: Boolean = false,
   ) {
     val userLine = ChatLine(newLineId(), Who.USER, modelText, display, topic = topic, attachments = attachments)
     lines.add(userLine)
@@ -267,14 +274,52 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         compactIfNeeded(text.length + images.size * IMAGE_TOKENS * CHARS_PER_TOKEN + audio.sumOf { it.size } / 32000 * AUDIO_TOKENS_PER_SEC * CHARS_PER_TOKEN)
         val start = System.currentTimeMillis()
         onAnswerStart?.invoke(answerId, voice)
-        gemma.send(text, images, audio)
-          .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
-          .collect { piece ->
-            update(answerId) { it.copy(text = it.text + piece) }
-            onAnswerText?.invoke(answerId, lines.getOrNull(indexOf(answerId))?.text ?: "")
+        val found = sources.toMutableList()
+        // The agent loop (agent.py agent_chat): answer, or call a tool, read its result, and try again.
+        var prompt = if (agent) "(${Tools.PROMPT})\n\n$text" else text
+        var first = true
+        var turn = 0
+        var nudged = false
+        var pushed = false
+        while (true) {
+          var out = ""
+          gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList())
+            .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
+            .collect { piece ->
+              out += piece
+              val shown = if (agent) Tools.stripCalls(out) else out
+              update(answerId) { it.copy(text = shown) }
+              onAnswerText?.invoke(answerId, shown)
+            }
+          first = false
+          if (!agent) break
+          val calls = Tools.parseCalls(out)
+          if (calls.isNotEmpty() && turn < MAX_TOOL_TURNS) {
+            turn++
+            val parts = mutableListOf<String>()
+            for (c in calls) parts.add("Tool result for ${c.name}:\n" + runTool(answerId, c, topic ?: display, found).take(2400))
+            val results = parts.joinToString("\n\n")
+            prompt = "$results\n\nNow answer my question using the tool results above."
+            update(answerId) { it.copy(text = "") }
+            continue
           }
+          if (out.isBlank() && turn > 0 && !nudged) {
+            // Small models sometimes go quiet after reading tool output; one nudge gets the answer out.
+            nudged = true
+            prompt = "Now answer my question using the tool results above."
+            continue
+          }
+          if (turn > 0 && !pushed && Tools.announcedStep(out) && turn < MAX_TOOL_TURNS) {
+            // It announced a step but stopped instead of calling the tool.
+            pushed = true
+            prompt = "Go ahead: do that now by calling the tool. Don't describe it."
+            update(answerId) { it.copy(text = "") }
+            continue
+          }
+          break
+        }
         val secs = (System.currentTimeMillis() - start) / 1000.0
-        update(answerId) { it.copy(done = true, seconds = secs, sources = sources) }
+        update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
         if (testCode) fixCode = testAnswer(answerId, codeFixed)
       } catch (t: Throwable) {
         update(answerId) { it.copy(done = true, error = friendlyError(t)) }
@@ -295,6 +340,39 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         }
       }
     }
+  }
+
+  /** Runs one tool call and shows it as a chip (green = worked, red = failed). */
+  private suspend fun runTool(answerId: Long, c: Tools.Call, question: String, found: MutableList<Source>): String {
+    val detail = when (c.name) {
+      "web_search" -> c.args["query"]?.ifBlank { null } ?: question.take(200)
+      else -> c.args["url"].orEmpty()
+    }
+    status = if (c.name == "web_search") "Searching the web…" else "Reading a page…"
+    update(answerId) { it.copy(tools = it.tools + ToolUse(c.name, detail)) }
+    val (ok, result) = try {
+      when (c.name) {
+        "web_search" -> {
+          val r = Tutor.webSearch(detail)
+          found.addAll(r.sources)
+          (r.sources.isNotEmpty()) to r.text
+        }
+        "web_fetch" -> {
+          val page = Tools.webFetch(detail, c.args["query"]?.ifBlank { null } ?: question)
+          val good = !page.text.startsWith("The page came back almost empty")
+          if (good) found.add(0, Source(page.title, if (detail.startsWith("http")) detail else "https://$detail"))
+          good to page.text
+        }
+        else -> false to "Error: unknown tool ${c.name}"
+      }
+    } catch (t: Throwable) {
+      false to "Error: ${t.message ?: t.javaClass.simpleName}"
+    }
+    update(answerId) { line ->
+      line.copy(tools = line.tools.dropLast(1) + ToolUse(c.name, detail, ok, result.take(2000)))
+    }
+    status = null
+    return result
   }
 
   /**
@@ -463,6 +541,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   companion object {
     const val CHARS_PER_TOKEN = 4
+    const val MAX_TOOL_TURNS = 4
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
   }

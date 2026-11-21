@@ -45,16 +45,9 @@ class TalkController(private val context: Context, private val chat: ChatControl
   private var thread: Thread? = null
 
   // Sound detection, same numbers as the PC: threshold = max(0.012, noise floor x 3).
-  private var floor = 0.004
   /** How loud our own voice comes back through the microphone while speaking (loudspeaker echo). */
-  private var echo = 0.0
-  private val pre = ArrayDeque<ShortArray>()
-  private val rec = mutableListOf<ShortArray>()
-  private var startAt = 0L
-  private var quietAt = 0L
-  private var loudSince = 0L
-  private var voicedMs = 0.0
   private var answerId: Long? = null
+  private val vad = VoiceDetector(RATE, PRE_FRAMES)
   /** Headphones on: no loudspeaker echo, so interrupting needs no extra margin. */
   private var loudspeakerSafe = false
 
@@ -141,9 +134,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
 
     running = true
     loudspeakerSafe = headphones()
-    floor = 0.004
-    echo = 0.0
-    pre.clear(); rec.clear()
+    vad.reset()
     moveTo(if (chat.busy) State.THINKING else State.LISTENING)
     thread = Thread({
       val buf = ShortArray(FRAME)
@@ -175,70 +166,35 @@ class TalkController(private val context: Context, private val chat: ChatControl
     moveTo(State.OFF)
   }
 
-  private fun rms(x: ShortArray): Double {
-    var s = 0.0
-    for (v in x) { val f = v / 32768.0; s += f * f }
-    return sqrt(s / x.size)
-  }
-
   /** Called for every ~32 ms of microphone sound (same logic as chat.html onTalkAudio). */
   private fun onFrame(x: ShortArray) {
-    val r = rms(x)
+    val r = VoiceDetector.rms(x)
     val now = SystemClock.elapsedRealtime()
-    val ms = x.size * 1000.0 / RATE
-    val th = max(0.012, floor * 3)
     main.post { level = (r / 0.08).coerceIn(0.0, 1.0).toFloat() }
-
-    when (st) {
-      State.LISTENING -> {
-        pre.addLast(x); while (pre.size > PRE_FRAMES) pre.removeFirst()
-        if (r > th) {
-          rec.clear(); rec.addAll(pre); pre.clear()
-          startAt = now; quietAt = now; voicedMs = 0.0
-          moveTo(State.RECORDING)
-        } else {
-          floor = floor * 0.97 + r * 0.03 // follow the room's background noise
+    val mode = when (st) {
+      State.LISTENING -> VoiceDetector.Mode.LISTENING
+      State.RECORDING -> VoiceDetector.Mode.RECORDING
+      State.SPEAKING -> VoiceDetector.Mode.SPEAKING
+      State.THINKING -> VoiceDetector.Mode.THINKING
+      State.OFF -> return
+    }
+    when (val e = vad.feed(x, now, mode, now - speakingSince, loudspeakerSafe)) {
+      VoiceDetector.Event.Start -> moveTo(State.RECORDING)
+      VoiceDetector.Event.Discard -> moveTo(State.LISTENING)
+      is VoiceDetector.Event.Finish -> finishUtterance(e.chunks)
+      VoiceDetector.Event.BargeIn -> {
+        Log.i(TAG, "Barge-in: rms=%.3f echo=%.3f".format(r, vad.echo))
+        main.post {
+          speaker.stop()
+          if (chat.busy) chat.stop()
         }
+        moveTo(State.RECORDING)
       }
-      State.RECORDING -> {
-        rec.add(x)
-        if (r > th) { quietAt = now; voicedMs += ms }
-        if (now - quietAt > 1200 || now - startAt > 30_000) finishUtterance()
-      }
-      State.SPEAKING, State.THINKING -> {
-        // Talking over the reply interrupts it. On the loudspeaker the phone hears its own voice,
-        // so the bar is set above that echo (learned while speaking) as well as above 3x the threshold.
-        val speakingNow = st == State.SPEAKING
-        val bar = if (speakingNow && !loudspeakerSafe) max(th * 3, echo * 3.5) else th * 3
-        // The first 0.6 s of each reply only learns how loud the echo is.
-        val learning = speakingNow && now - speakingSince < 600
-        if (speakingNow && (learning || r <= bar)) echo = echo * 0.9 + r * 0.1
-        if (speakingNow && !learning && r > bar) {
-          if (loudSince == 0L) loudSince = now
-          if (now - loudSince > 350) {
-            Log.i(TAG, "Barge-in: rms=%.3f bar=%.3f echo=%.3f".format(r, bar, echo))
-            loudSince = 0
-            main.post {
-              speaker.stop()
-              if (chat.busy) chat.stop()
-            }
-            rec.clear(); rec.addAll(pre); rec.add(x); pre.clear()
-            startAt = now; quietAt = now; voicedMs = 350.0
-            moveTo(State.RECORDING)
-          }
-        } else {
-          loudSince = 0
-          pre.addLast(x); while (pre.size > PRE_FRAMES) pre.removeFirst()
-        }
-      }
-      State.OFF -> {}
+      VoiceDetector.Event.None -> {}
     }
   }
 
-  private fun finishUtterance() {
-    val chunks = rec.toList()
-    rec.clear()
-    if (voicedMs < 300) { moveTo(State.LISTENING); return } // a cough or a click
+  private fun finishUtterance(chunks: List<ShortArray>) {
     moveTo(State.THINKING)
     spokeEndAt = SystemClock.elapsedRealtime()
     val wav = encodeWav(chunks)

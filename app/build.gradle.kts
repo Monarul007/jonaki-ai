@@ -30,6 +30,7 @@ android {
         compose = true
         buildConfig = true
     }
+    testOptions { unitTests.isReturnDefaultValues = true }
     packaging { jniLibs { pickFirsts.add("**/liblitertlm_jni.so") } }
 }
 
@@ -57,4 +58,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     // Reads the text inside PDFs, on the phone (Apache 2.0).
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+
+    testImplementation("junit:junit:4.13.2")
+    // Real org.json for JVM tests (Android's copy is only a stub there).
+    testImplementation("org.json:json:20240303")
 }
