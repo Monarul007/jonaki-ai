@@ -90,25 +90,14 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       ) { prefs.demos = it }
 
       Section("Voice")
-      VoicePicker(app)
-      Column(Modifier.padding(horizontal = 24.dp, vertical = 8.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Rounded.Speed, null, tint = MaterialTheme.colorScheme.primary)
-          Spacer(Modifier.size(16.dp))
-          Column(Modifier.weight(1f)) {
-            Text("Speech speed", style = MaterialTheme.typography.bodyLarge)
-            Text("%.1f×".format(prefs.speechRate), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-          }
-          TextButton(onClick = { app.speaker.readAloud(-1, "Hi! This is how I sound when I read my answers.") }) { Text("Try it") }
-        }
-        Slider(
-          value = prefs.speechRate,
-          onValueChange = { prefs.speechRate = (it * 10).toInt() / 10f },
-          valueRange = 0.5f..2f,
-          steps = 14,
-          modifier = Modifier.padding(start = 40.dp),
-        )
-      }
+      var voiceSheet by remember { mutableStateOf(false) }
+      val current = app.prefs.voice?.let { n -> app.speaker.voices().firstOrNull { it.name == n } }
+      ActionRow(
+        Icons.Rounded.RecordVoiceOver,
+        "Voice and speed",
+        (current?.let { voiceLabel(it) } ?: "Automatic (best voice, matches the language)") + " · %.1f×".format(app.prefs.speechRate),
+      ) { voiceSheet = true }
+      if (voiceSheet) VoiceSheet(app, onDismiss = { voiceSheet = false })
 
       Section("Look")
       Row(Modifier.padding(horizontal = 24.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -219,29 +208,6 @@ private fun ActionRow(icon: ImageVector, title: String, body: String? = null, en
     Column(Modifier.weight(1f)) {
       Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha))
       body?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-    }
-  }
-}
-
-@Composable
-private fun VoicePicker(app: App) {
-  var open by remember { mutableStateOf(false) }
-  val voices = remember(open) { app.speaker.voices() }
-  val current = app.prefs.voice?.let { v -> voices.firstOrNull { it.name == v } }
-  Column {
-    ActionRow(
-      Icons.Rounded.RecordVoiceOver,
-      "Voice",
-      current?.let { "${it.locale.displayName} · ${it.name.substringAfterLast('#').take(28)}" } ?: "Phone default",
-    ) { open = true }
-    DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-      DropdownMenuItem(text = { Text("Phone default") }, onClick = { app.prefs.voice = null; app.speaker.applyVoice(); open = false })
-      for (v in voices.take(60)) {
-        DropdownMenuItem(
-          text = { Text("${v.locale.displayName} · ${v.name.substringAfterLast('#').take(28)}") },
-          onClick = { app.prefs.voice = v.name; app.speaker.applyVoice(); open = false },
-        )
-      }
     }
   }
 }

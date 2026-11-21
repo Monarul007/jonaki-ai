@@ -320,3 +320,16 @@ of the new build.
 - Reopening a chat shows saved pictures instantly (no new search).
 - Viewer: picture (double-tap zoom, back closes), PDF (pages swipe, "Page 2 of 2"), DOCX text; attachment chips open it.
 - Airplane mode: answer arrives (42 s), figure card says "Pictures need internet" with "Find picture".
+
+## 14. Voices, chat polish (2026-11-21, Redmi)
+
+- Phone (Android) voices only: best installed offline voice per language (highest quality), Bengali letters → Bengali voice,
+  sentence pieces joined per language up to 220 chars, long first piece cut at the first comma, strict order.
+- Redmi already had offline Bengali (bn-BD, bn-IN) and English voices (quality "Good"). First sound: Bengali 0.57 s, English 0.19 s.
+- User verdict: phone voices "good enough" → the optional Kokoro/sherpa-onnx natural voice pack was NOT built.
+- Voice sheet: Automatic, best voices, more voices, speed 0.7–1.4×, Hear it (Bengali sample for Bengali voices),
+  "Get a Bengali voice" (ACTION_INSTALL_TTS_DATA) when none is installed.
+- Chat polish: one snapping follow-up row, full-width replies, 80% user bubbles, follow-only-at-bottom + "New message"
+  button, long-press action sheet, sideways example cards, status-bar icons follow theme.
+- Attach "Waking up Gemma" report: not reproducible on the Redmi (process and model stayed loaded through the picker);
+  most likely the repeated test installs restarting the app. Not re-tested on the 4 GB OPPO.
