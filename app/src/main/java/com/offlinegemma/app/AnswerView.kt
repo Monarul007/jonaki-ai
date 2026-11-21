@@ -74,7 +74,7 @@ import com.offlinegemma.app.ui.LocalExtraColors
 
 fun copyToClipboard(context: Context, text: String) {
   val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-  cm.setPrimaryClip(ClipData.newPlainText("Gemma", text))
+  cm.setPrimaryClip(ClipData.newPlainText("Jonaki AI", text))
   // Android 13+ shows its own "Copied" bubble.
   if (android.os.Build.VERSION.SDK_INT < 33) Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
 }
@@ -112,7 +112,7 @@ fun Answer(
     Row(verticalAlignment = Alignment.CenterVertically) {
       Avatar(thinking = !line.done)
       Spacer(Modifier.width(8.dp))
-      Text("Gemma", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      Text("Jonaki AI", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     if (line.tools.isNotEmpty()) ToolChips(line.tools)
     if (line.text.isEmpty() && !line.done) {
@@ -405,7 +405,7 @@ private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () 
           }
           line.demoError?.let { err ->
             Text(
-              "⚠ The demo hit an error: $err" + if (line.autoFixing) " — asking Gemma for a fix…" else "",
+              "⚠ The demo hit an error: $err" + if (line.autoFixing) " — asking Jonaki AI for a fix…" else "",
               color = scheme.error,
               style = MaterialTheme.typography.bodySmall,
             )

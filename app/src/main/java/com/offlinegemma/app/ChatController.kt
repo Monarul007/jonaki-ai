@@ -173,7 +173,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   var importing by mutableStateOf(false); private set
 
   fun addImage(uri: android.net.Uri) = import { listOf(Attachments.importImage(app, uri, store.filesDir(chatId))) }
-  fun addBitmap(bmp: android.graphics.Bitmap, name: String) = import { listOf(Attachments.saveBitmap(bmp, store.filesDir(chatId), name)) }
+  fun addBitmap(bmp: android.graphics.Bitmap, name: String) = import {
+    withContext(Dispatchers.IO) { listOf(Attachments.saveBitmap(bmp, store.filesDir(chatId), name)) }
+  }
 
   /** Any file: pictures and sound are kept as they are, documents are read as text. */
   fun addFile(uri: android.net.Uri) = import {
@@ -231,13 +233,21 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val modelText = if (hasAudio) "(${GemmaEngine.VOICE_RULE})\n\n$withDocs" else withDocs
     val display = text.ifBlank { if (voice) "🎤 Voice message" else "" }
     val codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage)
-    // Agent mode: offer the web tools when the question sounds like it needs the internet (agent.py ROUTES).
-    var agent = prefs.agent && prefs.webSearch && !codeProblem && text.isNotBlank() && Tools.wantsWeb(text)
-    if (agent && !Tools.online(app)) {
-      agent = false
-      notice("📴 You're offline, so Gemma answers from what it already knows (no web search).")
+    val online = Tools.online(app)
+    // A link the user typed, or words about recent events, always goes to the web tools —
+    // even when agent mode is off (agent.py find_links / ROUTES "web").
+    val links = if (text.isNotBlank() && prefs.webSearch) Tools.findLinks(text) else emptyList()
+    val wantsWeb = text.isNotBlank() && (links.isNotEmpty() || Tools.wantsWeb(text))
+    var agent = prefs.webSearch && !codeProblem && wantsWeb
+    if (agent && !online) agent = false
+    val offline = text.isNotBlank() && !online
+    if (offline && wantsWeb) {
+      notice("📴 You're offline — answering from Jonaki AI's own knowledge (this may be out of date).")
     }
-    sendToModel(display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice, testCode = codeProblem, agent = agent)
+    sendToModel(
+      display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice,
+      testCode = codeProblem, agent = agent, links = links, linkQuery = Tools.linkQuery(text), offline = offline,
+    )
   }
 
   /** A tutor button such as "🧒 Simpler". */
@@ -273,6 +283,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     testCode: Boolean = false,
     codeFixed: Boolean = false,
     agent: Boolean = false,
+    links: List<String> = emptyList(),
+    linkQuery: String = "",
+    offline: Boolean = false,
   ) {
     val userLine = ChatLine(newLineId(), Who.USER, modelText, display, topic = topic, attachments = attachments)
     lines.add(userLine)
@@ -288,17 +301,31 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val images = if (gemma.canSee) attachments.filter { it.kind == Attachment.Kind.IMAGE }.mapNotNull { readBytes(it) } else emptyList()
         val audio = if (gemma.canHear) attachments.filter { it.kind == Attachment.Kind.AUDIO }.mapNotNull { readBytes(it) } else emptyList()
         val skipped = attachments.count { it.kind != Attachment.Kind.DOC } - images.size - audio.size
-        val text = if (skipped > 0) "$modelText\n[$skipped attachment(s) skipped: this phone loaded Gemma without pictures and sound.]" else modelText
+        val text = if (skipped > 0) "$modelText\n[$skipped attachment(s) skipped: this phone loaded Jonaki AI without pictures and sound.]" else modelText
         compactIfNeeded(text.length + images.size * IMAGE_TOKENS * CHARS_PER_TOKEN + audio.sumOf { it.size } / 32000 * AUDIO_TOKENS_PER_SEC * CHARS_PER_TOKEN)
         val start = System.currentTimeMillis()
         onAnswerStart?.invoke(answerId, voice)
         val found = sources.toMutableList()
         // The agent loop (agent.py agent_chat): answer, or call a tool, read its result, and try again.
         var prompt = if (agent) "(${Tools.PROMPT})\n\n$text" else text
+        if (offline) prompt = "($OFFLINE_RULE)\n\n$prompt"
+        // A link in the message is read BEFORE the model answers (agent.py pre-fetch). Small
+        // models often skip the fetch and then claim they "can't browse".
+        if (links.isNotEmpty() && !offline) {
+          val pages = links.map { url ->
+            "Tool result for web_fetch:\n" +
+              runTool(
+                answerId, Tools.Call("web_fetch", mapOf("url" to url, "query" to linkQuery)),
+                topic ?: display, found,
+              ).take(2400)
+          }
+          prompt = pages.joinToString("\n\n") + "\n\n" + LINK_RULE + "\n\n" + prompt
+        }
         var first = true
         var turn = 0
         var nudged = false
         var pushed = false
+        var refused = false
         while (true) {
           var out = ""
           gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList())
@@ -310,28 +337,49 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               onAnswerText?.invoke(answerId, shown)
             }
           first = false
-          if (!agent) break
-          val calls = Tools.parseCalls(out)
-          if (calls.isNotEmpty() && turn < MAX_TOOL_TURNS) {
+          if (agent) {
+            val calls = Tools.parseCalls(out)
+            if (calls.isNotEmpty() && turn < MAX_TOOL_TURNS) {
+              turn++
+              val parts = mutableListOf<String>()
+              for (c in calls) parts.add("Tool result for ${c.name}:\n" + runTool(answerId, c, topic ?: display, found).take(2400))
+              val results = parts.joinToString("\n\n")
+              prompt = "$results\n\nNow answer my question using the tool results above."
+              update(answerId) { it.copy(text = "") }
+              continue
+            }
+            if (out.isBlank() && turn > 0 && !nudged) {
+              // Small models sometimes go quiet after reading tool output; one nudge gets the answer out.
+              nudged = true
+              prompt = "Now answer my question using the tool results above."
+              continue
+            }
+            if (turn > 0 && !pushed && Tools.announcedStep(out) && turn < MAX_TOOL_TURNS) {
+              // It announced a step but stopped instead of calling the tool.
+              pushed = true
+              prompt = "Go ahead: do that now by calling the tool. Don't describe it."
+              update(answerId) { it.copy(text = "") }
+              continue
+            }
+          }
+          // Refusal safety net (agent.py REFUSAL_RX): never let "I have no information" be the
+          // final word. Throw the refusal away (do not save or speak it), look it up, ask once more.
+          if (!refused && out.isNotBlank() && Tools.REFUSAL_RX.containsMatchIn(out.take(600))) {
+            refused = true
             turn++
-            val parts = mutableListOf<String>()
-            for (c in calls) parts.add("Tool result for ${c.name}:\n" + runTool(answerId, c, topic ?: display, found).take(2400))
-            val results = parts.joinToString("\n\n")
-            prompt = "$results\n\nNow answer my question using the tool results above."
             update(answerId) { it.copy(text = "") }
-            continue
-          }
-          if (out.isBlank() && turn > 0 && !nudged) {
-            // Small models sometimes go quiet after reading tool output; one nudge gets the answer out.
-            nudged = true
-            prompt = "Now answer my question using the tool results above."
-            continue
-          }
-          if (turn > 0 && !pushed && Tools.announcedStep(out) && turn < MAX_TOOL_TURNS) {
-            // It announced a step but stopped instead of calling the tool.
-            pushed = true
-            prompt = "Go ahead: do that now by calling the tool. Don't describe it."
-            update(answerId) { it.copy(text = "") }
+            onAnswerStart?.invoke(answerId, voice) // restart the speech without the refusal
+            var results = ""
+            if (!offline && prefs.webSearch) {
+              results = runTool(
+                answerId,
+                Tools.Call("web_search", mapOf("query" to (topic ?: display).take(200))),
+                topic ?: display, found,
+              )
+            }
+            val usable = results.isNotBlank() && !results.startsWith("Error") && !results.startsWith("No results")
+            prompt = (if (usable) "Tool result for web_search:\n$results\n\n" else "") + REFUSAL_RULE +
+              (if (offline) " " + OFFLINE_RULE else "")
             continue
           }
           break
@@ -463,7 +511,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           (r.sources.isNotEmpty()) to r.text
         }
         "web_fetch" -> {
-          val page = Tools.webFetch(detail, c.args["query"]?.ifBlank { null } ?: question)
+          val page = Tools.webFetch(app, detail, c.args["query"]?.ifBlank { null } ?: question)
           val good = !page.text.startsWith("The page came back almost empty")
           if (good) found.add(0, Source(page.title, if (detail.startsWith("http")) detail else "https://$detail"))
           good to page.text
@@ -651,5 +699,21 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     const val MAX_TOOL_TURNS = 4
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
+
+    /** agent.py pre-fetch line: what to do with a page the user linked, without asking first. */
+    const val LINK_RULE =
+      "Above is the page I linked. Do what I asked using it. If I only gave the link, explain what " +
+        "the site is, who it is for, its key content and offers, and a few honest suggestions. Do " +
+        "not ask me what I want first."
+
+    /** agent.py refusal retry line: never let a refusal be the final answer. */
+    const val REFUSAL_RULE =
+      "Answer my question now using those results and what you know. Never say you have no " +
+        "information: if the results are thin, say what you found and give your best answer."
+
+    /** When the phone has no internet: answer anyway, but say it may be old. */
+    const val OFFLINE_RULE =
+      "I am offline right now. Answer from your own knowledge and add a short note that this may " +
+        "be out of date. Never say you have no information."
   }
 }

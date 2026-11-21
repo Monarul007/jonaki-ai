@@ -76,6 +76,42 @@ class ToolCallTest {
     assertTrue(out.contains("Moon"))
     assertFalse(out.contains("Footer"))
   }
+
+  @Test fun findsBareDomainsAndUrls() {
+    assertEquals(listOf("https://monarul.pro.bd"), Tools.findLinks("Analyze monarul.pro.bd"))
+    assertEquals(listOf("https://daraz.com.bd"), Tools.findLinks("what is daraz.com.bd?"))
+    assertEquals(listOf("https://example.com/a?b=1"), Tools.findLinks("open https://example.com/a?b=1 now"))
+  }
+
+  @Test fun ignoresFilesEmailsAndFileNames() {
+    assertTrue(Tools.findLinks("read calc.py and plan.docx").isEmpty())
+    assertTrue(Tools.findLinks("mail me at monarul@coder71.org").isEmpty())
+    assertTrue(Tools.findLinks("use it, e.g. in code").isEmpty())
+  }
+
+  @Test fun keepsAtMostTwoLinks() {
+    assertEquals(2, Tools.findLinks("a.com b.net c.org").size)
+  }
+
+  @Test fun linkQueryDropsFillerWords() {
+    // "analyze <link>" only gives fillers, so the page is read from the top (" ").
+    assertEquals(" ", Tools.linkQuery("Analyze monarul.pro.bd"))
+    assertTrue(Tools.linkQuery("summarize pricing offers at example.com").contains("pricing"))
+  }
+
+  @Test fun routesRecentEvents() {
+    assertTrue(Tools.wantsWeb("latest news in Dhaka"))
+    assertTrue(Tools.wantsWeb("what is the weather today"))
+    assertTrue(Tools.wantsWeb("who won the match yesterday"))
+    assertFalse(Tools.wantsWeb("explain photosynthesis"))
+  }
+
+  @Test fun spotsRefusals() {
+    assertTrue(Tools.REFUSAL_RX.containsMatchIn("I'm sorry, but I don't have information about that."))
+    assertTrue(Tools.REFUSAL_RX.containsMatchIn("I cannot access the internet or browse websites."))
+    assertTrue(Tools.REFUSAL_RX.containsMatchIn("As an AI model, my knowledge cutoff is 2024."))
+    assertFalse(Tools.REFUSAL_RX.containsMatchIn("Monarul Islam is the developer at Coder71."))
+  }
 }
 
 class MathTest {

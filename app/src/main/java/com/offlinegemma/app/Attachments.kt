@@ -49,20 +49,29 @@ object Attachments {
   /** Copies any picture into the chat's folder as a small JPEG. */
   suspend fun importImage(context: Context, uri: Uri, dir: File, name: String = displayName(context, uri)): Attachment =
     withContext(Dispatchers.IO) {
-      val src = ImageDecoder.createSource(context.contentResolver, uri)
-      val bmp = ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
-        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-        val w = info.size.width
-        val h = info.size.height
-        val scale = minOf(1f, MAX_SIDE.toFloat() / maxOf(w, h))
-        if (scale < 1f) decoder.setTargetSize((w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
-      }
-      saveBitmap(bmp, dir, name)
+      saveSource(ImageDecoder.createSource(context.contentResolver, uri), dir, name)
     }
 
+  private fun saveSource(src: ImageDecoder.Source, dir: File, name: String): Attachment {
+    val bmp = ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+      decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+      val w = info.size.width
+      val h = info.size.height
+      val scale = minOf(1f, MAX_SIDE.toFloat() / maxOf(w, h))
+      if (scale < 1f) decoder.setTargetSize((w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
+    }
+    return saveBitmap(bmp, dir, name)
+  }
+
   fun saveBitmap(bmp: Bitmap, dir: File, name: String): Attachment {
+    val longest = maxOf(bmp.width, bmp.height)
+    val kept = if (longest > MAX_SIDE) {
+      val s = MAX_SIDE.toFloat() / longest
+      Bitmap.createScaledBitmap(bmp, (bmp.width * s).toInt().coerceAtLeast(1), (bmp.height * s).toInt().coerceAtLeast(1), true)
+        .also { if (it !== bmp) bmp.recycle() }
+    } else bmp
     val out = File(dir, "img_${UUID.randomUUID().toString().take(8)}.jpg")
-    out.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 88, it) }
+    out.outputStream().use { kept.compress(Bitmap.CompressFormat.JPEG, 88, it) }
     return Attachment(Attachment.Kind.IMAGE, name, out.path)
   }
 

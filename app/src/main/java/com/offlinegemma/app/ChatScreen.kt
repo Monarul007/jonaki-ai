@@ -100,6 +100,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   var input by rememberSaveable { mutableStateOf("") }
   var sheet by rememberSaveable { mutableStateOf(false) }
   var viewing by remember { mutableStateOf<ViewItem?>(null) }
+  var cameraOpen by rememberSaveable { mutableStateOf(false) }
   viewing?.let { Viewer(it, onClose = { viewing = null }) }
   // Text shared into the app from another app.
   LaunchedEffect(chat.sharedText) { chat.sharedText?.let { input = it; chat.sharedText = null } }
@@ -125,6 +126,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   var actionsFor by remember { mutableStateOf<ChatLine?>(null) }
   actionsFor?.let { l -> MessageActions(chat, speaker, l, onDismiss = { actionsFor = null }) }
 
+  Box(Modifier.fillMaxSize()) {
   ModalNavigationDrawer(
     drawerState = drawer,
     drawerContent = {
@@ -148,7 +150,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
               Text(chat.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
               val sub = chat.status ?: when {
                 chat.loadError != null -> "Model failed to load"
-                chat.loading -> "Waking up Gemma…"
+                chat.loading -> "Waking up Jonaki AI…"
                 chat.ready -> "On-device · ${chat.gemma.mode.substringBefore(" +")}"
                 else -> ""
               }
@@ -171,6 +173,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
           onText = { input = it },
           onSend = { val t = input.trim(); input = ""; chat.sendTyped(t) },
           onTalk = onTalk,
+          onCamera = { cameraOpen = true },
           sheetOpen = sheet,
           onSheet = { sheet = it },
         )
@@ -220,6 +223,13 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
         }
       }
     }
+  }
+  if (cameraOpen) {
+    CameraCapture(
+      onPhoto = { bitmap -> chat.addBitmap(bitmap, "Photo"); cameraOpen = false },
+      onClose = { cameraOpen = false },
+    )
+  }
   }
 }
 
@@ -345,7 +355,7 @@ private fun EmptyState(loading: Boolean, onPrompt: (Int) -> Unit) {
     Spacer(Modifier.height(40.dp))
     BrandMark(96.dp)
     Spacer(Modifier.height(16.dp))
-    Text(if (loading) "Waking up Gemma…" else "How can I help?", style = MaterialTheme.typography.headlineMedium)
+    Text(if (loading) "Waking up Jonaki AI…" else "How can I help?", style = MaterialTheme.typography.headlineMedium)
     Spacer(Modifier.height(8.dp))
     Text(
       if (loading) "Loading the model into memory. The first time can take up to two minutes."
@@ -391,7 +401,7 @@ private fun LoadError(message: String, onRetry: () -> Unit) {
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.Center,
   ) {
-    Text("Gemma could not start", style = MaterialTheme.typography.headlineSmall)
+    Text("Jonaki AI could not start", style = MaterialTheme.typography.headlineSmall)
     Spacer(Modifier.height(8.dp))
     Text(
       "The phone may be short on memory. Close other apps and try again.\n\n($message)",
@@ -416,7 +426,7 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
     Row(Modifier.padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
       BrandMark(36.dp, animate = false)
       Spacer(Modifier.size(10.dp))
-      Text("Jonaki", style = MaterialTheme.typography.titleLarge)
+      Text("Jonaki AI", style = MaterialTheme.typography.titleLarge)
     }
     NavigationDrawerItem(
       label = { Text("New chat") },

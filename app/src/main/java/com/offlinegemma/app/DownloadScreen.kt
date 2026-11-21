@@ -96,7 +96,7 @@ private fun WelcomePage(onNext: () -> Unit) {
     Text("Your own AI,\nright on this phone", style = MaterialTheme.typography.displaySmall, textAlign = TextAlign.Center)
     Spacer(Modifier.height(12.dp))
     Text(
-      "Jonaki (জোনাকি, firefly) makes its own light: Google's Gemma AI runs right on your phone. No account. No cloud.",
+      "Jonaki AI (জোনাকি, firefly) makes its own light: a small AI model runs right on your phone. No account. No cloud.",
       style = MaterialTheme.typography.bodyLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
       textAlign = TextAlign.Center,
@@ -150,7 +150,7 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") }
     Text("One-time download", style = MaterialTheme.typography.headlineMedium)
     Text(
-      "The ${ModelInfo.NAME} model is ${formatBytes(ModelInfo.SIZE_BYTES)}. It is saved inside this app only, " +
+      "The Jonaki AI model is ${formatBytes(ModelInfo.SIZE_BYTES)}. It is saved inside this app only, " +
         "checked for damage, and then everything works offline.",
       style = MaterialTheme.typography.bodyLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -170,8 +170,8 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
         CheckRow(
           if (bigPhone) Icons.Rounded.Memory else Icons.Rounded.Speed,
           "Memory",
-          if (bigPhone) "${formatBytes(ram)} · great for Gemma"
-          else "${formatBytes(ram)} · Gemma works, but answers come slowly (a few words a second). Phones with 8 GB are faster.",
+          if (bigPhone) "${formatBytes(ram)} · great for Jonaki AI"
+          else "${formatBytes(ram)} · Jonaki AI works, but answers come slowly (a few words a second). Phones with 8 GB are faster.",
           ok = if (bigPhone) true else null,
           okColor = extra.ok,
         )

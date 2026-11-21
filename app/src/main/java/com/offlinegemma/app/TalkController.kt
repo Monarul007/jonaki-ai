@@ -110,7 +110,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
   fun start() {
     if (running) return
     if (!chat.gemma.canHear) {
-      error = "Talk mode needs Gemma's hearing, which didn't load on this phone."
+      error = "Talk mode needs Jonaki AI's hearing, which didn't load on this phone."
       return
     }
     error = null
