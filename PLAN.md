@@ -309,3 +309,14 @@ or the release app crashes at start.
 Not done / next: native LiteRT-LM tool calls (text protocol only for now), Python (Chaquopy) skipped —
 JavaScript covers code tests; camera/document/share paths not yet tried on the phone; OPPO 4 GB smoke test
 of the new build.
+
+## 13. Textbook figures + viewer (2026-11-21, Redmi, release build)
+
+- "How does photosynthesis work?": 2 figures (photosynthesis sunflower diagram, chloroplast), both ✓ checked,
+  correct captions, Source + CC BY-SA 4.0 + author. Whole answer incl. pictures: 82 s.
+- "Why do we have seasons on Earth?": Figure 1 = Earth's orbit/seasons diagram (CC0), correct.
+  Figure 2 was wrong (solar water heater) because Gemma's figure words were 9 words long and Gemma said YES anyway.
+  Fix: search with ≤5 key words + the question's topic words (`Figures.searchWords`). Not yet re-run on the phone.
+- Reopening a chat shows saved pictures instantly (no new search).
+- Viewer: picture (double-tap zoom, back closes), PDF (pages swipe, "Page 2 of 2"), DOCX text; attachment chips open it.
+- Airplane mode: answer arrives (42 s), figure card says "Pictures need internet" with "Find picture".
