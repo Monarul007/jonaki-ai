@@ -1,5 +1,6 @@
 package com.offlinegemma.app
 
+import androidx.compose.foundation.layout.width
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
@@ -30,6 +31,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.ContentCopy
+import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
@@ -102,9 +108,21 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
 
   // Follow the answer while it streams; jump to the newest message when one is added.
   val last = chat.lines.lastOrNull()
-  LaunchedEffect(chat.lines.size, last?.text?.length, last?.done) {
-    if (chat.lines.isNotEmpty()) listState.animateScrollToItem(chat.lines.lastIndex, scrollOffset = Int.MAX_VALUE / 2)
+  // Follow the stream only while the reader is at the bottom; never jump while they read older messages.
+  val atBottom by remember { androidx.compose.runtime.derivedStateOf { !listState.canScrollForward } }
+  var follow by remember { mutableStateOf(true) }
+  LaunchedEffect(atBottom, listState.isScrollInProgress) { if (listState.isScrollInProgress) follow = atBottom }
+  val lastUserId = chat.lines.lastOrNull { it.who == Who.USER }?.id
+  LaunchedEffect(lastUserId) {
+    // A message the user just sent: always show it.
+    follow = true
+    if (chat.lines.isNotEmpty()) listState.scrollToItem(chat.lines.lastIndex, Int.MAX_VALUE / 2)
   }
+  LaunchedEffect(chat.lines.size, last?.text?.length, last?.done, chat.figStates.size) {
+    if (follow && chat.lines.isNotEmpty()) listState.scrollToItem(chat.lines.lastIndex, Int.MAX_VALUE / 2)
+  }
+  var actionsFor by remember { mutableStateOf<ChatLine?>(null) }
+  actionsFor?.let { l -> MessageActions(chat, speaker, l, onDismiss = { actionsFor = null }) }
 
   ModalNavigationDrawer(
     drawerState = drawer,
@@ -163,17 +181,38 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
             when (i) {
               0 -> { input = "Solve it"; sheet = true }
               1 -> input = "Explain black holes with a demo"
-              else -> onTalk()
+              2 -> onTalk()
+              else -> input = "How does photosynthesis work?"
             }
           })
-          else -> LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
-          ) {
-            items(chat.lines, key = { it.id }) { line ->
-              MessageItem(chat, speaker, line, onOpen = { viewing = it })
+          else -> {
+            LazyColumn(
+              state = listState,
+              modifier = Modifier.fillMaxSize(),
+              contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+              verticalArrangement = Arrangement.spacedBy(20.dp),
+            ) {
+              items(chat.lines, key = { it.id }) { line ->
+                MessageItem(chat, speaker, line, onOpen = { viewing = it }, onLongPress = { actionsFor = line })
+              }
+            }
+            // Scrolled up while something new arrives: a button back to the newest message.
+            androidx.compose.animation.AnimatedVisibility(
+              visible = !atBottom && !follow,
+              enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.scaleIn(),
+              exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.scaleOut(),
+              modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+            ) {
+              androidx.compose.material3.SmallFloatingActionButton(
+                onClick = { follow = true; scope.launch { listState.animateScrollToItem(chat.lines.lastIndex, Int.MAX_VALUE / 2) } },
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+              ) {
+                Row(Modifier.padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                  Icon(androidx.compose.material.icons.Icons.Rounded.ArrowDownward, null, Modifier.size(18.dp))
+                  Spacer(Modifier.size(6.dp))
+                  Text(if (chat.busy) "New message" else "Latest", style = MaterialTheme.typography.labelLarge)
+                }
+              }
             }
           }
         }
@@ -183,9 +222,9 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
 }
 
 @Composable
-private fun MessageItem(chat: ChatController, speaker: Speaker, line: ChatLine, onOpen: (ViewItem) -> Unit) {
+private fun MessageItem(chat: ChatController, speaker: Speaker, line: ChatLine, onOpen: (ViewItem) -> Unit, onLongPress: () -> Unit) {
   when (line.who) {
-    Who.USER -> UserBubble(line, onOpen)
+    Who.USER -> UserBubble(line, onOpen, onLongPress)
     Who.NOTICE -> NoticeLine(line.display)
     Who.MODEL -> {
       val newest = line.id == chat.lines.lastOrNull { it.who == Who.MODEL }?.id
@@ -202,15 +241,18 @@ private fun MessageItem(chat: ChatController, speaker: Speaker, line: ChatLine, 
         onCheckFacts = { chat.checkFacts(line.id) },
         chat = chat,
         onOpen = onOpen,
+        onLongPress = onLongPress,
       )
     }
   }
 }
 
 @Composable
-@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
-private fun UserBubble(line: ChatLine, onOpen: (ViewItem) -> Unit) {
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class, ExperimentalFoundationApi::class)
+private fun UserBubble(line: ChatLine, onOpen: (ViewItem) -> Unit, onLongPress: () -> Unit) {
   val extra = com.offlinegemma.app.ui.LocalExtraColors.current
+  androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
+  val maxBubble = maxWidth * 0.8f
   Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
     if (line.attachments.isNotEmpty()) {
       androidx.compose.foundation.layout.FlowRow(
@@ -231,9 +273,43 @@ private fun UserBubble(line: ChatLine, onOpen: (ViewItem) -> Unit) {
       color = extra.userBubble,
       contentColor = extra.onUserBubble,
       shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 6.dp),
-      modifier = Modifier.widthIn(max = 320.dp),
+      modifier = Modifier.widthIn(max = maxBubble).clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 6.dp))
+        .combinedClickable(onClick = {}, onLongClick = onLongPress, onLongClickLabel = "Message actions"),
     ) {
       Text(line.display, Modifier.padding(horizontal = 16.dp, vertical = 11.dp), style = MaterialTheme.typography.bodyLarge)
+    }
+  }
+  }
+}
+
+/** Long-press a message: Copy / Share / Read aloud / Regenerate, as a bottom sheet with big rows. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MessageActions(chat: ChatController, speaker: Speaker, line: ChatLine, onDismiss: () -> Unit) {
+  val context = androidx.compose.ui.platform.LocalContext.current
+  val text = if (line.who == Who.MODEL) Markdown.plain(line.text) else line.display
+  val newest = line.id == chat.lines.lastOrNull { it.who == Who.MODEL }?.id
+  androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+    Column(Modifier.padding(bottom = 24.dp)) {
+      @Composable
+      fun Item(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, enabled: Boolean = true, run: () -> Unit) {
+        androidx.compose.material3.ListItem(
+          headlineContent = { Text(label) },
+          leadingContent = { Icon(icon, null) },
+          colors = androidx.compose.material3.ListItemDefaults.colors(containerColor = Color.Transparent),
+          modifier = Modifier.clickable(enabled = enabled) { run(); onDismiss() }.heightIn(min = 56.dp)
+            .then(if (enabled) Modifier else Modifier.padding(0.dp)),
+        )
+      }
+      Item(androidx.compose.material.icons.Icons.Rounded.ContentCopy, "Copy") { copyToClipboard(context, text) }
+      Item(androidx.compose.material.icons.Icons.Rounded.Share, "Share") {
+        val i = android.content.Intent(android.content.Intent.ACTION_SEND).setType("text/plain").putExtra(android.content.Intent.EXTRA_TEXT, text)
+        context.startActivity(android.content.Intent.createChooser(i, "Share"))
+      }
+      if (line.who == Who.MODEL) {
+        Item(androidx.compose.material.icons.Icons.AutoMirrored.Rounded.VolumeUp, "Read aloud") { speaker.readAloud(line.id, line.text) }
+        if (newest) Item(androidx.compose.material.icons.Icons.Rounded.Refresh, "Regenerate", enabled = chat.canSend()) { chat.regenerate() }
+      }
     }
   }
 }
@@ -253,15 +329,18 @@ private val EXAMPLES = listOf(
   "📷" to "Paste a screenshot and say “solve it”",
   "🪐" to "Explain black holes with a demo",
   "🎙️" to "Talk to me",
+  "🌱" to "How does photosynthesis work?",
 )
 
 @Composable
 private fun EmptyState(loading: Boolean, onPrompt: (Int) -> Unit) {
+  Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
   Column(
-    Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState()).padding(horizontal = 24.dp, vertical = 16.dp),
+    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
     verticalArrangement = Arrangement.Center,
   ) {
+    Spacer(Modifier.height(40.dp))
     BrandMark(96.dp)
     Spacer(Modifier.height(16.dp))
     Text(if (loading) "Waking up Gemma…" else "How can I help?", style = MaterialTheme.typography.headlineMedium)
@@ -278,23 +357,28 @@ private fun EmptyState(loading: Boolean, onPrompt: (Int) -> Unit) {
       CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
     }
     Spacer(Modifier.height(28.dp))
-    Column(Modifier.widthIn(max = 420.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-      for ((i, example) in EXAMPLES.withIndex()) {
-        val (emoji, text) = example
-        Surface(
-          onClick = { onPrompt(i) },
-          shape = MaterialTheme.shapes.medium,
-          color = MaterialTheme.colorScheme.surfaceContainerLow,
-          modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-        ) {
-          Row(Modifier.padding(horizontal = 16.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(emoji, style = MaterialTheme.typography.titleLarge)
-            Spacer(Modifier.size(14.dp))
-            Text(text, style = MaterialTheme.typography.bodyLarge)
-          }
+  }
+  // Example prompts as cards in one row that scrolls sideways (edge to edge).
+  androidx.compose.foundation.lazy.LazyRow(
+    contentPadding = PaddingValues(horizontal = 20.dp),
+    horizontalArrangement = Arrangement.spacedBy(12.dp),
+    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).semantics { contentDescription = "Example prompts" },
+  ) {
+    items(EXAMPLES.size) { i ->
+      val (emoji, text) = EXAMPLES[i]
+      Surface(
+        onClick = { onPrompt(i) },
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        modifier = Modifier.width(200.dp).heightIn(min = 112.dp),
+      ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Text(emoji, style = MaterialTheme.typography.headlineSmall)
+          Text(text, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
       }
     }
+  }
   }
 }
 

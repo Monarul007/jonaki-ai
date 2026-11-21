@@ -125,6 +125,17 @@ class MainActivity : ComponentActivity() {
     handleTestCommands(intent)
 
     setContent {
+      // Status bar icons follow the app's own theme choice (light icons on dark screens).
+      val dark = when (app.prefs.theme) {
+        ThemeChoice.SYSTEM -> androidx.compose.foundation.isSystemInDarkTheme()
+        ThemeChoice.LIGHT -> false
+        ThemeChoice.DARK -> true
+      }
+      androidx.compose.runtime.LaunchedEffect(dark) {
+        val style = if (dark) androidx.activity.SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        else androidx.activity.SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+      }
       AppTheme(app.prefs.theme, app.prefs.dynamicColor) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
           var screen by rememberSaveable { mutableStateOf(if (ModelInfo.isDownloaded(this)) Screen.CHAT else Screen.SETUP) }

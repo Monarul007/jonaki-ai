@@ -10,6 +10,12 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -89,65 +95,139 @@ fun Answer(
   onCheckFacts: () -> Unit,
   chat: ChatController? = null,
   onOpen: (ViewItem) -> Unit = {},
+  onLongPress: () -> Unit = {},
 ) {
   val context = LocalContext.current
-  Row(Modifier.fillMaxWidth()) {
-    Avatar(thinking = !line.done)
-    Spacer(Modifier.width(10.dp))
-    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-      if (line.tools.isNotEmpty()) ToolChips(line.tools)
-      if (line.text.isEmpty() && !line.done) {
-        Shimmer()
-      } else {
-        AnswerBody(line, onDemoError, onFix, canAct, chat, onOpen)
+  // Full-width reply (no bubble), a small "Gemma" label on top; long-press opens the actions sheet.
+  Column(
+    Modifier.fillMaxWidth().combinedClickable(
+      interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+      indication = null,
+      onClick = {},
+      onLongClick = onLongPress,
+      onLongClickLabel = "Message actions",
+    ),
+    verticalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      Avatar(thinking = !line.done)
+      Spacer(Modifier.width(8.dp))
+      Text("Gemma", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (line.tools.isNotEmpty()) ToolChips(line.tools)
+    if (line.text.isEmpty() && !line.done) {
+      Shimmer()
+    } else {
+      AnswerBody(line, onDemoError, onFix, canAct, chat, onOpen)
+    }
+    line.error?.let {
+      Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small) {
+        Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)
       }
-      line.error?.let {
-        Surface(color = MaterialTheme.colorScheme.errorContainer, shape = MaterialTheme.shapes.small) {
-          Text(it, Modifier.padding(12.dp), color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)
+    }
+    line.runOutput?.let { RunOutput(it) }
+    if (line.sources.isNotEmpty()) Sources(line.sources)
+    if (line.done) {
+      Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.offset(x = (-12).dp)) {
+        SmallAction(Icons.Rounded.ContentCopy, "Copy reply") { copyToClipboard(context, Markdown.plain(line.text)) }
+        if (newest) SmallAction(Icons.Rounded.Refresh, "Regenerate reply", enabled = canAct, onClick = onRegenerate)
+        val reading = speaker.readingId == line.id
+        SmallAction(
+          if (reading) Icons.Rounded.StopCircle else Icons.AutoMirrored.Rounded.VolumeUp,
+          if (reading) "Stop reading" else "Read aloud",
+        ) { speaker.readAloud(line.id, line.text) }
+        line.seconds?.let { secs ->
+          Text(
+            "%.1fs · %d words".format(secs, line.text.trim().split(Regex("\\s+")).count { it.isNotEmpty() }),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 6.dp),
+          )
         }
       }
-      line.runOutput?.let { RunOutput(it) }
-      if (line.sources.isNotEmpty()) Sources(line.sources)
-      if (line.done) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          SmallAction(Icons.Rounded.ContentCopy, "Copy reply") { copyToClipboard(context, Markdown.plain(line.text)) }
-          if (newest) SmallAction(Icons.Rounded.Refresh, "Regenerate reply", enabled = canAct, onClick = onRegenerate)
-          val reading = speaker.readingId == line.id
-          SmallAction(
-            if (reading) Icons.Rounded.StopCircle else Icons.AutoMirrored.Rounded.VolumeUp,
-            if (reading) "Stop reading" else "Read aloud",
-          ) { speaker.readAloud(line.id, line.text) }
-          line.seconds?.let { secs ->
-            Text(
-              "%.1fs · %d words".format(secs, line.text.trim().split(Regex("\\s+")).count { it.isNotEmpty() }),
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              modifier = Modifier.padding(start = 6.dp),
-            )
-          }
-        }
-        if (newest && canAct && Tutor.wantsFollowups(line.text)) {
-          FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(0.dp)) {
-            for (q in Tutor.nextQuestions(line.text)) {
-              SuggestionChip(onClick = { onFollowup(q) }, label = { Text(q, style = MaterialTheme.typography.bodyMedium) })
-            }
-            for ((label, prompt) in Tutor.BUTTONS) {
-              AssistChip(
-                onClick = { onButton(label, prompt) },
-                label = { Text(label) },
-                colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                border = null,
-              )
-            }
-            AssistChip(
-              onClick = onCheckFacts,
-              label = { Text(Tutor.CHECK_FACTS) },
-              colors = AssistChipDefaults.assistChipColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
-              border = null,
-            )
-          }
+    }
+    // Follow-ups: only on the newest reply, after it finished, in one sideways-scrolling row.
+    androidx.compose.animation.AnimatedVisibility(
+      visible = line.done && newest && canAct && Tutor.wantsFollowups(line.text),
+      enter = androidx.compose.animation.fadeIn(tween(200)) + androidx.compose.animation.expandVertically(tween(200)),
+      exit = androidx.compose.animation.fadeOut(tween(150)) + androidx.compose.animation.shrinkVertically(tween(150)),
+    ) {
+      FollowupRow(Tutor.nextQuestions(line.text), onFollowup, onButton, onCheckFacts)
+    }
+  }
+}
+
+/**
+ * Suggested questions (filled) then tutor actions (outlined, with icons), in ONE row that scrolls
+ * sideways and snaps. It reaches the screen edges (the chat list has 16dp side padding) and fades
+ * out on the right to show there is more.
+ */
+@Composable
+private fun FollowupRow(
+  questions: List<String>,
+  onFollowup: (String) -> Unit,
+  onButton: (String, String) -> Unit,
+  onCheckFacts: () -> Unit,
+) {
+  val context = LocalContext.current
+  val state = androidx.compose.foundation.lazy.rememberLazyListState()
+  val fadeColor = MaterialTheme.colorScheme.surface
+  val bleed = 16.dp
+  androidx.compose.foundation.lazy.LazyRow(
+    state = state,
+    flingBehavior = androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior(state),
+    contentPadding = androidx.compose.foundation.layout.PaddingValues(start = bleed, end = bleed + 24.dp),
+    horizontalArrangement = Arrangement.spacedBy(8.dp),
+    modifier = Modifier
+      .layout { m, c ->
+        // Full bleed: 16dp wider on each side than the reply column.
+        val extra = bleed.roundToPx() * 2
+        val p = m.measure(c.copy(minWidth = c.maxWidth + extra, maxWidth = c.maxWidth + extra))
+        layout(c.maxWidth, p.height) { p.place(-extra / 2, 0) }
+      }
+      .drawWithContent {
+        drawContent()
+        if (state.canScrollForward) {
+          val w = 40.dp.toPx()
+          drawRect(
+            androidx.compose.ui.graphics.Brush.horizontalGradient(listOf(fadeColor.copy(alpha = 0f), fadeColor), startX = size.width - w, endX = size.width),
+            topLeft = androidx.compose.ui.geometry.Offset(size.width - w, 0f),
+            size = androidx.compose.ui.geometry.Size(w, size.height),
+          )
         }
       }
+      .semantics { contentDescription = "Suggested follow-ups" },
+  ) {
+    items(questions.size) { i ->
+      val q = questions[i]
+      Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier
+          .heightIn(min = 44.dp)
+          .widthIn(max = 260.dp)
+          .clip(RoundedCornerShape(50))
+          .combinedClickable(
+            onClickLabel = "Ask: $q",
+            onClick = { onFollowup(q) },
+            onLongClick = { android.widget.Toast.makeText(context, q, android.widget.Toast.LENGTH_LONG).show() },
+          ),
+      ) {
+        Box(Modifier.padding(horizontal = 16.dp, vertical = 11.dp), contentAlignment = Alignment.CenterStart) {
+          Text(q, style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+      }
+    }
+    val actions = Tutor.BUTTONS.map { (label, prompt) -> label to { onButton(label, prompt) } } + (Tutor.CHECK_FACTS to onCheckFacts)
+    items(actions.size) { i ->
+      val (label, run) = actions[i]
+      OutlinedButton(
+        onClick = run,
+        modifier = Modifier.heightIn(min = 44.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp),
+        shape = RoundedCornerShape(50),
+      ) { Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1) }
     }
   }
 }
@@ -157,10 +237,10 @@ private fun Avatar(thinking: Boolean) {
   val t = rememberInfiniteTransition(label = "avatar")
   val a by t.animateFloat(0.45f, 1f, infiniteRepeatable(tween(700), RepeatMode.Reverse), label = "a")
   Box(
-    Modifier.size(30.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh),
+    Modifier.size(24.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceContainerHigh),
     contentAlignment = Alignment.Center,
   ) {
-    androidx.compose.foundation.Canvas(Modifier.size(18.dp).alpha(if (thinking) a else 1f)) {
+    androidx.compose.foundation.Canvas(Modifier.size(14.dp).alpha(if (thinking) a else 1f)) {
       sparkle(Brand.aurora)
     }
   }

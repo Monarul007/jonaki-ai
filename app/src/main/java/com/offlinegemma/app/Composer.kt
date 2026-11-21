@@ -152,7 +152,7 @@ fun Composer(
             onValueChange = onText,
             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
             placeholder = { Text(if (chat.ready) "Ask Gemma anything" else "Gemma is waking up…") },
-            maxLines = 6,
+            maxLines = 5,
             colors = TextFieldDefaults.colors(
               focusedContainerColor = Color.Transparent,
               unfocusedContainerColor = Color.Transparent,
