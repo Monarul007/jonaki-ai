@@ -1,0 +1,179 @@
+package com.offlinegemma.app
+
+import android.text.Html
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLDecoder
+import java.net.URLEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * "Interactive tutor" rules, ported from the desktop app
+ * (agent.py TEACH_RX / TEACH_RULES and chat.html addFollowups / NEXT_RE).
+ */
+object Tutor {
+  /** Same words as agent.py TEACH_RX: does this look like a science/maths "explain" question? */
+  private val TEACH_RX = Regex(
+    "explain|interactive|simulat|visuali|show me|how does|how do|why does|why do|what is|what are|" +
+      "physics|chemi|cosmolog|biolog|astronom|quantum|black hole|galax|planet|atom|molecul|reaction|" +
+      "energy|gravity|relativity|wave|teach|understand|learn|lesson|diagram",
+    RegexOption.IGNORE_CASE,
+  )
+
+  fun looksLikeTeaching(text: String) = TEACH_RX.containsMatchIn(text)
+
+  private const val RULE_ACCURATE =
+    "When explaining a science or maths topic: be accurate, use short sections and one everyday " +
+      "analogy. If unsure about a fact, say so."
+
+  // Same wording that worked on desktop; 80 -> 60 lines because phones are slower.
+  private const val RULE_DEMO =
+    "If a visual would help or the user asks for something interactive, add ONE small interactive " +
+      "demo in a ```html block: plain HTML with <script>, a <canvas> or <svg>, and labelled " +
+      "<input type=\"range\"> sliders that change the picture live. No external files or libraries, " +
+      "under 60 lines, and it must fit a 500px-wide box (width:100%, no fixed wide sizes). " +
+      "The app shows it as a live mini-page right in the chat, so never tell the user to save or " +
+      "open a file."
+
+  private const val RULE_NO_DEMO = "Do not include any code or HTML demo in this answer."
+
+  private const val RULE_NEXT =
+    "Finish with a last line that starts with NEXT: followed by three short real questions about " +
+      "this topic that the user might want to ask next, separated by | (write the actual questions)."
+
+  /**
+   * LiteRT-LM's system prompt is fixed for a whole chat, so the rules ride along
+   * with this one message. Only the user's own words are shown on screen.
+   */
+  fun wrap(userText: String, demos: Boolean): String {
+    if (!looksLikeTeaching(userText)) return userText
+    val rules = listOf(RULE_ACCURATE, if (demos) RULE_DEMO else RULE_NO_DEMO, RULE_NEXT)
+    return "(Answer rules: ${rules.joinToString(" ")})\n\n$userText"
+  }
+
+  /** Fixed tutor buttons (label, prompt). Check facts is handled specially. */
+  const val CHECK_FACTS = "✅ Check facts"
+  val BUTTONS = listOf(
+    "🧒 Simpler" to "Explain that again more simply, like I'm 10, with an everyday analogy.",
+    "🔬 Go deeper" to "Go deeper: explain the real science behind that, with the key equations and what each part means.",
+    "❓ Quiz me" to "Quiz me on this. Ask me ONE multiple-choice question (A–D) with exactly one correct option, " +
+      "then stop and wait for my answer. After I answer, tell me if I'm right and ask the next one (3 in total).",
+  )
+
+  /**
+   * Same words as desktop, plus the broken code itself: a small model may have lost
+   * track of its own demo, and the code is short.
+   */
+  fun fixPrompt(error: String, html: String) =
+    "The interactive demo shows this error: $error. Send the corrected full demo in one ```html block. " +
+      "Keep it short.\n\nThe demo code was:\n```html\n$html\n```"
+
+  /** The first demo's code in a reply, for the fix prompt. */
+  fun firstDemo(text: String): String = split(text).filterIsInstance<Part.Demo>().firstOrNull()?.html ?: ""
+
+  // ---- NEXT line ----
+
+  private val NEXT_LINE = Regex("""^\s*[*_]*\s*NEXT\s*[*_]*\s*:(.*)$""", setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE))
+  private val PLACEHOLDER = Regex("""^(follow-?up )?question \d$""", RegexOption.IGNORE_CASE)
+
+  fun stripNext(text: String) = text.replace(NEXT_LINE, "").trimEnd()
+
+  /** Up to three real follow-up questions from the last NEXT line; placeholders dropped. */
+  fun nextQuestions(text: String): List<String> {
+    val m = NEXT_LINE.findAll(text).lastOrNull() ?: return emptyList()
+    return m.groupValues[1].split("|")
+      .map { it.replace(Regex("[*_`]"), "").trim() }
+      .filter { it.isNotEmpty() && !(it.startsWith("<") && it.endsWith(">")) && !PLACEHOLDER.matches(it) }
+      .take(3)
+  }
+
+  /** Same rule as desktop: buttons only for a NEXT line or a long reply. */
+  fun wantsFollowups(text: String) = nextQuestions(text).isNotEmpty() || text.length >= 700
+
+  // ---- Splitting a reply into text, code and demos ----
+
+  sealed class Part {
+    data class Text(val text: String) : Part()
+    data class Code(val lang: String, val body: String) : Part()
+    /** [closed] = false while the block is still streaming. */
+    data class Demo(val html: String, val closed: Boolean) : Part()
+  }
+
+  private val DEMO_TAGS = Regex("""<(script|canvas|input|svg|button)\b""", RegexOption.IGNORE_CASE)
+
+  fun split(raw: String): List<Part> {
+    val lines = stripNext(raw.replace("\r\n", "\n")).split("\n")
+    val parts = mutableListOf<Part>()
+    val para = StringBuilder()
+    fun flush() {
+      val t = para.toString().trim('\n')
+      if (t.isNotBlank()) parts.add(Part.Text(t))
+      para.clear()
+    }
+    var i = 0
+    while (i < lines.size) {
+      val line = lines[i]
+      val fence = Regex("""^\s*```\s*(\w*)""").find(line)
+      if (fence != null) {
+        flush()
+        val lang = fence.groupValues[1]
+        val buf = mutableListOf<String>()
+        i++
+        while (i < lines.size && !lines[i].trimStart().startsWith("```")) buf.add(lines[i++])
+        val closed = i < lines.size
+        i++
+        val body = buf.joinToString("\n")
+        val isHtml = lang.equals("html", true) || lang.equals("htm", true)
+        when {
+          isHtml && (!closed || DEMO_TAGS.containsMatchIn(body)) -> parts.add(Part.Demo(body, closed))
+          else -> parts.add(Part.Code(lang, body))
+        }
+        continue
+      }
+      para.append(line).append('\n')
+      i++
+    }
+    flush()
+    return parts
+  }
+
+  // ---- Web search for "Check facts" (same DuckDuckGo method as agent.py web_search) ----
+
+  suspend fun webSearch(query: String, max: Int = 5): String = withContext(Dispatchers.IO) {
+    val url = "https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8")
+    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+      connectTimeout = 15_000
+      readTimeout = 15_000
+      setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android) OfflineGemma")
+    }
+    val page = try {
+      conn.inputStream.bufferedReader().readText()
+    } finally {
+      conn.disconnect()
+    }
+    val heads = Regex("""<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+      .findAll(page).toList()
+    val out = mutableListOf<String>()
+    for ((k, m) in heads.withIndex()) {
+      var link = unescape(m.groupValues[1])
+      Regex("uddg=([^&]+)").find(link)?.let { link = URLDecoder.decode(it.groupValues[1], "UTF-8") }
+      if (link.startsWith("//")) link = "https:$link"
+      if ("duckduckgo.com/y.js" in link) continue // ad
+      val title = unescape(m.groupValues[2].replace(Regex("<[^>]+>"), "")).trim()
+      val end = if (k + 1 < heads.size) heads[k + 1].range.first else page.length
+      val snip = Regex("""class="result__snippet"[^>]*>(.*?)</a>""", RegexOption.DOT_MATCHES_ALL)
+        .find(page.substring(m.range.last + 1, end))?.groupValues?.get(1)
+        ?.let { unescape(it.replace(Regex("<[^>]+>"), "")).replace(Regex("\\s+"), " ").trim().take(240) } ?: ""
+      if (title.isNotEmpty()) out.add("${out.size + 1}. $title\n   $snip\n   $link")
+      if (out.size >= max) break
+    }
+    if (out.isEmpty()) "No results for '$query'." else "Results for '$query':\n" + out.joinToString("\n")
+  }
+
+  private fun unescape(s: String) = Html.fromHtml(s, Html.FROM_HTML_MODE_LEGACY).toString()
+
+  fun checkFactsPrompt(results: String) =
+    "Check the facts in your last answer against these web search results. List anything that was " +
+      "wrong or unclear and give the corrected facts with the source link. If it was all correct, say so.\n\n$results"
+}
