@@ -28,6 +28,34 @@ enum class Screen { SETUP, CHAT, SETTINGS, ABOUT }
 
 class MainActivity : ComponentActivity() {
   private val screenState = mutableStateOf<Screen?>(null)
+  private val talking = mutableStateOf(false)
+
+  private val micPermission = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok ->
+    if (ok) beginTalk() else (application as App).chat.notice("🎙️ Talk mode needs the microphone. You can allow it in the phone's Settings.")
+  }
+
+  private fun startTalk() {
+    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) beginTalk()
+    else micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+  }
+
+  private fun beginTalk() {
+    val app = application as App
+    app.speaker.stop()
+    app.talk.start()
+    talking.value = true
+  }
+
+  private fun stopTalk() {
+    (application as App).talk.stop()
+    talking.value = false
+  }
+
+  override fun onStop() {
+    super.onStop()
+    // Never keep listening when the app is not on screen.
+    if (talking.value) stopTalk()
+  }
 
   /**
    * Developer builds only: test commands sent from the computer with
@@ -50,6 +78,7 @@ class MainActivity : ComponentActivity() {
       }
     }
     if (intent.hasExtra("new_chat")) app.chat.newChat()
+    if (intent.hasExtra("talk")) { if (intent.getStringExtra("talk") == "off") stopTalk() else startTalk() }
     intent.getStringExtra("open_chat")?.let { idx -> app.chat.chats.getOrNull(idx.toIntOrNull() ?: 0)?.let { app.chat.openChat(it.id) } }
     intent.replaceExtras(Bundle())
   }
@@ -98,10 +127,15 @@ class MainActivity : ComponentActivity() {
           BackHandler(enabled = screen == Screen.SETTINGS || screen == Screen.ABOUT) {
             screen = if (screen == Screen.ABOUT) Screen.SETTINGS else Screen.CHAT
           }
+          if (talking.value) {
+            BackHandler { stopTalk() }
+            TalkScreen(app.talk, onClose = { stopTalk() })
+            return@Surface
+          }
           AnimatedContent(screen, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "screen") { s ->
             when (s) {
               Screen.SETUP -> OnboardingScreen(app.prefs, onModelReady = { screen = Screen.CHAT })
-              Screen.CHAT -> ChatScreen(app.chat, app.speaker, onSettings = { screen = Screen.SETTINGS }, onAbout = { screen = Screen.ABOUT }, onTalk = { app.chat.notice("🎙️ Talk mode is coming in the next step.") })
+              Screen.CHAT -> ChatScreen(app.chat, app.speaker, onSettings = { screen = Screen.SETTINGS }, onAbout = { screen = Screen.ABOUT }, onTalk = { startTalk() })
               Screen.SETTINGS -> SettingsScreen(app, onBack = { screen = Screen.CHAT }, onAbout = { screen = Screen.ABOUT }, onModelDeleted = { screen = Screen.SETUP })
               Screen.ABOUT -> AboutScreen(onBack = { screen = Screen.SETTINGS })
             }

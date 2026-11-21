@@ -10,6 +10,7 @@ class App : Application() {
   val gemma by lazy { GemmaEngine(this, prefs) }
   val speaker by lazy { Speaker(this, prefs) }
   val chat by lazy { ChatController(this, gemma, store, prefs) }
+  val talk by lazy { TalkController(this, chat, speaker) }
 
   /**
    * The phone is running out of memory while we are in the background:
