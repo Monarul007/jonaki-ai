@@ -81,7 +81,9 @@ rotation/screens never reload the 2.6 GB model.
 6. **Keep the model file out of git.** It is downloaded and verified on device; `.gitignore`
    already excludes `*.litertlm` and caches.
 7. **Release signing is external.** Do not generate or commit a key to “make it build”; an
-   unsigned release APK is expected in a fresh checkout.
+   unsigned release APK is expected in a fresh checkout. The original key is on the office PC;
+   the exact shipping steps (install over 1.0.0 without losing the model or chats) are in
+   `RELEASE.md`.
 
 ---
 

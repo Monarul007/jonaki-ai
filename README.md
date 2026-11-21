@@ -58,6 +58,7 @@ The release key is deliberately outside the repo (`~/.android-keys/offlinegemma.
 - `KNOWLEDGE.md` — full workspace knowledge (Android + desktop, model facts, data flows)
 - `PLAN.md` — product plan, milestones, test results
 - `INSTALL.md` — instructions for internal testers
+- `RELEASE.md` — shipping the signed 1.0.1 update (the key is on the office PC)
 
 ## Status
 
