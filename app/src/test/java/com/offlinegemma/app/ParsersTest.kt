@@ -106,6 +106,12 @@ class ToolCallTest {
     assertFalse(Tools.wantsWeb("explain photosynthesis"))
   }
 
+  @Test fun routesBengaliRecentEvents() {
+    assertTrue(Tools.wantsWeb("আজকের আবহাওয়া কেমন?"))
+    assertTrue(Tools.wantsWeb("সর্বশেষ খবর বলো"))
+    assertFalse(Tools.wantsWeb("রাসায়নিক সাম্যাবস্থা কী?"))
+  }
+
   @Test fun spotsRefusals() {
     assertTrue(Tools.REFUSAL_RX.containsMatchIn("I'm sorry, but I don't have information about that."))
     assertTrue(Tools.REFUSAL_RX.containsMatchIn("I cannot access the internet or browse websites."))
@@ -170,6 +176,28 @@ class BengaliTextTest {
     assertFalse(s.contains("சரி"))
     assertFalse(s.contains("明显"))
     assertFalse(s.contains("したがって"))
+  }
+}
+
+class VerifierTest {
+  @Test fun flagsUncertaintyAndMissingParts() {
+    assertEquals(AnswerProblem.UNSURE, verifyAnswer("আমি জানি না।", "প্রশ্ন", emptyList(), false, false, true).problem)
+    val missing = verifyAnswer("(ক) এক (খ) দুই", "উত্তর দাও (ক), (খ), (গ)", emptyList(), false, false, true)
+    assertEquals(AnswerProblem.MISSING_PARTS, missing.problem)
+    assertTrue(missing.detail.contains("গ"))
+  }
+
+  @Test fun flagsMissingAndUncitedSources() {
+    val q = "latest news in Dhaka"
+    assertEquals(AnswerProblem.NO_SOURCES, verifyAnswer("Some answer", q, emptyList(), true, false, true).problem)
+    val s = listOf(Source("Dhaka news today", "https://example.com/news"))
+    assertEquals(AnswerProblem.NOT_CITED, verifyAnswer("Some answer", q, s, true, false, true).problem)
+    assertEquals(AnswerProblem.OK, verifyAnswer("Source: https://example.com/news — the news.", q, s, true, false, true).problem)
+  }
+
+  @Test fun completeAnswerPasses() {
+    val a = "**\$(\\text{ক})\$** এক\n**\$(\\text{খ})\$** দুই\n**\$(\\text{গ})\$** তিন\n**\$(\\text{ঘ})\$** চার"
+    assertEquals(AnswerProblem.OK, verifyAnswer(a, "উত্তর দাও (ক), (খ), (গ), (ঘ)", emptyList(), false, false, true).problem)
   }
 }
 

@@ -361,6 +361,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var pushed = false
         var refused = false
         var reviewed = false
+        var researchRounds = 0
+        var sourceSearchTried = false
         val usedOcr = ocrText.isNotBlank()
         // A Bengali question must get a Bengali answer; the model sometimes mixes in Tamil/Hindi.
         val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
@@ -405,11 +407,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // final word. Throw the refusal away (do not save or speak it), look it up, ask once more.
           if (!refused && out.isNotBlank() && Tools.isUnsure(out)) {
             refused = true
+            researchRounds++
             turn++
             update(answerId) { it.copy(text = "") }
             onAnswerStart?.invoke(answerId, voice) // restart the speech without the refusal
             var results = ""
             if (!offline && prefs.webSearch) {
+              sourceSearchTried = true
               results = runTool(
                 answerId,
                 Tools.Call("web_search", mapOf("query" to (topic ?: display).take(200))),
@@ -429,6 +433,79 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             onAnswerStart?.invoke(answerId, voice)
             status = "Checking the answer…"
             prompt = reviewRule(subject)
+            continue
+          }
+          // Bounded confidence loop: every part answered, no uncertainty, sources present for a
+          // web question, and at least one source named. Stops after MAX_RESEARCH_ROUNDS.
+          val questionForParts = listOfNotNull(
+            topic ?: display,
+            ocrText.takeIf { it.isNotBlank() },
+          ).joinToString("\n")
+          val check = verifyAnswer(
+            out,
+            questionForParts,
+            found,
+            needsWeb = links.isNotEmpty() || Tools.wantsWeb(topic ?: display),
+            offline = offline,
+            webSearchOn = prefs.webSearch && !sourceSearchTried,
+          )
+          if (check.problem != AnswerProblem.OK && researchRounds < MAX_RESEARCH_ROUNDS) {
+            researchRounds++
+            turn++
+            update(answerId) { it.copy(text = "") }
+            onAnswerStart?.invoke(answerId, voice)
+            status = when (check.problem) {
+              AnswerProblem.MISSING_PARTS -> "Checking the answer…"
+              AnswerProblem.NOT_CITED -> "Checking sources…"
+              else -> "Looking it up…"
+            }
+            when (check.problem) {
+              AnswerProblem.MISSING_PARTS -> {
+                prompt = "You did not answer ${check.detail}. Rewrite the complete answer, keeping every " +
+                  "part you already answered and adding ${check.detail}. Answer every part the user " +
+                  "asked for, in order, without dropping any. Keep the same language and facts."
+              }
+              AnswerProblem.UNSURE -> {
+                if (!offline && prefs.webSearch && found.isEmpty() && !sourceSearchTried) {
+                  sourceSearchTried = true
+                  val results = runTool(
+                    answerId,
+                    Tools.Call("web_search", mapOf("query" to (topic ?: display).take(200))),
+                    topic ?: display, found,
+                  )
+                  val usable = results.isNotBlank() && !results.startsWith("Error") && !results.startsWith("No results")
+                  prompt = (if (usable) "Tool result for web_search:\n$results\n\n" else "") + REFUSAL_RULE
+                } else if (found.isNotEmpty()) {
+                  prompt = "Rewrite the complete answer using the sources above. Keep every part. Do not " +
+                    "say you don't know. Name at least one source."
+                } else {
+                  // No sources and a lookup already failed: stop with the honest answer + a figure.
+                  break
+                }
+              }
+              AnswerProblem.NO_SOURCES -> {
+                val results = if (!offline && prefs.webSearch && !sourceSearchTried) {
+                  sourceSearchTried = true
+                  runTool(
+                    answerId,
+                    Tools.Call("web_search", mapOf("query" to (topic ?: display).take(200))),
+                    topic ?: display, found,
+                  )
+                } else ""
+                val usable = results.isNotBlank() && !results.startsWith("Error") && !results.startsWith("No results")
+                prompt = if (usable) {
+                  "Tool result for web_search:\n$results\n\nRewrite the complete answer using these results. " +
+                    "Keep every part and name at least one source."
+                } else {
+                  REFUSAL_RULE
+                }
+              }
+              AnswerProblem.NOT_CITED -> {
+                prompt = "Rewrite the complete answer, keep every part, and name at least one source link " +
+                  "from the sources above. Do not invent a source."
+              }
+              AnswerProblem.OK -> {}
+            }
             continue
           }
           break
@@ -748,6 +825,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     const val BENGALI_RULE = "Answer in Bengali (বাংলা), even if I write in English. Keep code, maths, " +
       "[FIGURE: ...] search words and the NEXT: line's format as they are; write the NEXT questions in Bengali."
     const val MAX_TOOL_TURNS = 4
+    /** Extra look-up/rewrite rounds after the first answer (the refusal retry counts as one). */
+    const val MAX_RESEARCH_ROUNDS = 3
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
 

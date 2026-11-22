@@ -30,6 +30,7 @@ object Tools {
     """latest|news|today|tonight|yesterday|this week|this month|this year|right now|currently|current|""" +
       """price of|price|weather|forecast|score|who won|search|look up|google|find out|release|version|""" +
       """who is|what is|when did|where is|how much|breaking|trending|update|""" +
+      """আজকের|আজ|এখন|বর্তমান|সাম্প্রতিক|খবর|সংবাদ|দাম|আবহাওয়া|স্কোর|আপডেট|সর্বশেষ|কে জিতেছে|""" +
       """https?://|www\.|website|web ?page|online|internet""",
     RegexOption.IGNORE_CASE,
   )
