@@ -125,6 +125,27 @@ object Tutor {
   private fun nfc(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC)
   private val BN_STOP_N = BN_STOP.map(::nfc).toSet()
 
+  /**
+   * Figure search uses English Wikipedia/Commons. Map common Bengali science topics so a Bengali
+   * answer can still find a real picture.
+   */
+  private val FIGURE_EN = linkedMapOf(
+    "ইলেকট্রোপ্লেটিং" to "electroplating", "তড়িৎ প্রলেপন" to "electroplating",
+    "লবণ সেতু" to "salt bridge", "নিউক্লিয়ার ফিশন" to "nuclear fission",
+    "একমুখী বিক্রিয়া" to "one-way reaction", "রাসায়নিক সাম্যাবস্থা" to "chemical equilibrium",
+    "সালোকসংশ্লেষ" to "photosynthesis", "পেট্রোলিয়াম" to "petroleum", "দহন" to "combustion",
+    "জারণ" to "oxidation", "বিজারণ" to "reduction", "তড়িৎ বিশ্লেষণ" to "electrolysis",
+    "কোষ" to "cell", "উদ্ভিদ" to "plant", "শ্বসন" to "respiration", "মহাকর্ষ" to "gravity",
+    "আলো" to "light", "শব্দ" to "sound", "চুম্বক" to "magnetism", "বিদ্যুৎ" to "electricity",
+    "পরমাণু" to "atom", "অণু" to "molecule", "যৌগ" to "compound", "মিশ্রণ" to "mixture",
+  )
+
+  fun englishFigureQuery(q: String): String {
+    var out = q
+    for ((bn, en) in FIGURE_EN) out = out.replace(bn, en, ignoreCase = true)
+    return out
+  }
+
   /** Search words from a question: "How does photosynthesis work?" -> "photosynthesis" (chat.html topicQuery). */
   fun topicQuery(q: String): String {
     val cleaned = nfc(q).replace(Regex("[?!.,\"“”]"), " ")
@@ -169,10 +190,14 @@ object Tutor {
     var q = topicQuery(question)
     // "Answer the picture" has no useful search words: take the first lettered question's topic.
     if ((q.length < 3 || q.contains("ছবি") || q.contains("প্রশ্ন")) && page != null) {
-      val first = Regex("""\((?:ক|a|i)\)\s*([^\n?।]{2,50})""").find(page)?.groupValues?.get(1)
+      // Prefer the answer's own first heading (spelling repaired by the model) over the OCR text.
+      val plainOut = out.replace(Regex("""\\text\{([^{}]*)\}"""), "$1").replace("$", "")
+      val first = Regex("""\((?:ক|a|i)\)\s*([^\n?।]{2,50})""").find(plainOut)?.groupValues?.get(1)
+        ?: Regex("""\((?:ক|a|i)\)\s*([^\n?।]{2,50})""").find(page)?.groupValues?.get(1)
       if (first != null) q = topicQuery(first)
     }
     if (q.length < 3) return out
+    q = englishFigureQuery(q)
     val tag = "[FIGURE: $q diagram]"
     val cut = Regex("\\n\\s*\\n").find(out)?.range?.first ?: -1 // after the first paragraph
     return if (cut > 0) out.substring(0, cut) + "\n\n" + tag + "\n" + out.substring(cut) else "$out\n\n$tag"
