@@ -94,10 +94,10 @@ object Tools {
   /** Low-confidence wording, English and Bengali: look it up and attach a figure. */
   val UNSURE_RX = Regex(
     """i'?m not sure|i am not sure|not (entirely |completely )?certain|i (really )?(don'?t|do not) know|""" +
-      """no reliable information|i cannot verify|i can'?t verify|""" +
-      """my knowledge (may be|is) (outdated|limited)|""" +
+      """no reliable information|i cannot verify|i can'?t verify|i (cannot|can'?t) (tell|know|say|answer)|""" +
+      """i am unable to (tell|know|answer)|my knowledge (may be|is) (outdated|limited)|""" +
       """জানি না|জানা নেই|নিশ্চিত নই|নিশ্চিত না|তথ্য নেই|সঠিক তথ্য নেই|""" +
-      """যথেষ্ট তথ্য নেই|পর্যাপ্ত তথ্য নেই|উত্তর দিতে পারব না|বলতে পারব না|বলতে পারছি না""",
+      """যথেষ্ট তথ্য নেই|পর্যাপ্ত তথ্য নেই|জানতে পারি না|পারি না|পারছি না|পারব না""",
     RegexOption.IGNORE_CASE,
   )
 

@@ -181,6 +181,7 @@ class BengaliTextTest {
 
 class VerifierTest {
   @Test fun flagsUncertaintyAndMissingParts() {
+    assertEquals(AnswerProblem.UNSURE, verifyAnswer("", "প্রশ্ন", emptyList(), false, false, true).problem)
     assertEquals(AnswerProblem.UNSURE, verifyAnswer("আমি জানি না।", "প্রশ্ন", emptyList(), false, false, true).problem)
     val missing = verifyAnswer("(ক) এক (খ) দুই", "উত্তর দাও (ক), (খ), (গ)", emptyList(), false, false, true)
     assertEquals(AnswerProblem.MISSING_PARTS, missing.problem)
@@ -205,6 +206,7 @@ class FigureAndConfidenceTest {
   @Test fun spotsUnsureAnswersInBothLanguages() {
     assertTrue(Tools.isUnsure("আমি এই প্রশ্নের সঠিক উত্তর জানি না।"))
     assertTrue(Tools.isUnsure("আমার জানা নেই।"))
+    assertTrue(Tools.isUnsure("আমি আপনার বর্তমান অবস্থান বা সময় জানতে পারি না, তাই নির্দিষ্ট তথ্য দিতে পারছি না।"))
     assertTrue(Tools.isUnsure("I'm not sure about the exact date."))
     assertTrue(Tools.isUnsure("I don't know the answer."))
     assertFalse(Tools.isUnsure("মিথেনের দহন বিক্রিয়া হলো CH₄ + 2O₂ → CO₂ + 2H₂O।"))

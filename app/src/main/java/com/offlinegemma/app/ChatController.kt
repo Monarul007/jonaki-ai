@@ -242,7 +242,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     if (agent && !online) agent = false
     val offline = text.isNotBlank() && !online
     if (offline && wantsWeb) {
-      notice("📴 You're offline — answering from Jonaki AI's own knowledge (this may be out of date).")
+      notice("📴 You're offline — live information (weather, news, prices) isn't available.")
     }
     sendToModel(
       display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice,
@@ -342,7 +342,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val found = sources.toMutableList()
         // The agent loop (agent.py agent_chat): answer, or call a tool, read its result, and try again.
         var prompt = if (agent) "(${Tools.PROMPT})\n\n$text" else text
-        if (offline) prompt = "($OFFLINE_RULE)\n\n$prompt"
+        if (offline) {
+          val live = Tools.wantsWeb(topic ?: display)
+          prompt = "(${if (live) OFFLINE_LIVE_RULE else OFFLINE_RULE})\n\n$prompt"
+        }
         // A link in the message is read BEFORE the model answers (agent.py pre-fetch). Small
         // models often skip the fetch and then claim they "can't browse".
         if (links.isNotEmpty() && !offline) {
@@ -363,6 +366,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var reviewed = false
         var researchRounds = 0
         var sourceSearchTried = false
+        var blankRetried = false
         val usedOcr = ocrText.isNotBlank()
         // A Bengali question must get a Bengali answer; the model sometimes mixes in Tamil/Hindi.
         val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
@@ -405,7 +409,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           // Refusal safety net (agent.py REFUSAL_RX): never let "I have no information" be the
           // final word. Throw the refusal away (do not save or speak it), look it up, ask once more.
-          if (!refused && out.isNotBlank() && Tools.isUnsure(out)) {
+          // Only throw the answer away when a lookup can actually add evidence. Offline (or with
+          // web search off), the honest answer is better than a retry that may come back empty.
+          if (!refused && !offline && prefs.webSearch && out.isNotBlank() && Tools.isUnsure(out)) {
             refused = true
             researchRounds++
             turn++
@@ -466,7 +472,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
                   "asked for, in order, without dropping any. Keep the same language and facts."
               }
               AnswerProblem.UNSURE -> {
-                if (!offline && prefs.webSearch && found.isEmpty() && !sourceSearchTried) {
+                if (out.isBlank()) {
+                  if (blankRetried) break // one retry for an empty answer, then the fallback below
+                  blankRetried = true
+                  prompt = "Answer the question now. Do not return an empty answer."
+                } else if (!offline && prefs.webSearch && found.isEmpty() && !sourceSearchTried) {
                   sourceSearchTried = true
                   val results = runTool(
                     answerId,
@@ -513,7 +523,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val secs = (System.currentTimeMillis() - start) / 1000.0
         // A lesson without a picture gets one, like a textbook page (saved with the marker in it).
         if (!testCode) update(answerId) {
-          it.copy(text = Tutor.ensureFigure(it.text, topic, unsure = Tools.isUnsure(it.text)))
+          // Never leave an empty bubble: a last-resort message is better than silence.
+          val shown = if (it.text.isBlank()) {
+            if (bengaliAnswer) "দুঃখিত, এই মুহূর্তে উত্তরটি তৈরি করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।"
+            else "Sorry, I couldn't produce an answer. Please try again."
+          } else it.text
+          it.copy(text = Tutor.ensureFigure(shown, topic, unsure = Tools.isUnsure(shown)))
         }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
         // Pictures are found after the answer, one at a time; never while talk mode is speaking.
@@ -822,8 +837,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   companion object {
     const val CHARS_PER_TOKEN = 4
-    const val BENGALI_RULE = "Answer in Bengali (বাংলা), even if I write in English. Keep code, maths, " +
-      "[FIGURE: ...] search words and the NEXT: line's format as they are; write the NEXT questions in Bengali."
+    const val BENGALI_RULE = "Answer in Bengali (বাংলা), even if I write in English. Use Bengali words; " +
+      "keep only technical terms, formulas, code, [FIGURE: ...] search words and the NEXT: line's format " +
+      "as they are; write the NEXT questions in Bengali."
     const val MAX_TOOL_TURNS = 4
     /** Extra look-up/rewrite rounds after the first answer (the refusal retry counts as one). */
     const val MAX_RESEARCH_ROUNDS = 3
@@ -907,6 +923,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     const val OFFLINE_RULE =
       "I am offline right now. Answer from your own knowledge and add a short note that this may " +
         "be out of date. Never say you have no information."
+
+    /** Offline + a question that needs live data: be honest, never invent it. */
+    const val OFFLINE_LIVE_RULE =
+      "I am offline right now. This question needs current information (news, weather, prices, scores), " +
+        "which I cannot fetch. Do not invent an answer. Say clearly that the phone is offline and that " +
+        "I need the internet for the latest information; add only general guidance if it helps."
   }
 }
 
