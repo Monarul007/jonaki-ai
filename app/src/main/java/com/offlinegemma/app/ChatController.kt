@@ -321,22 +321,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         }
 
         val skippedAudio = attachments.count { it.kind == Attachment.Kind.AUDIO } - audio.size
+        // The textbook page decides which subject rules apply; uncertain -> plain review, no subject facts.
+        val subject = subjectOf("$modelText\n$ocrText")
         val text = buildString {
           append(modelText)
           if (ocrText.isNotBlank()) {
-            append("\n\n[The text below was read from my picture by on-device OCR and may contain mistakes. ")
-            append("First silently repair obvious OCR errors using the subject and context: a Latin-looking ")
-            append("fragment inside a Bengali sentence is usually a misread Bengali word, a garbled word beside ")
-            append("'বিক্রিয়া' is a reaction name, and broken chemical formulas should be rebuilt from the ")
-            append("surrounding names. Known slips on Bengali chemistry pages: 'সমাণুকরণ' means 'সংযোজন', ")
-            append("'Be দাও' means 'যুক্তি দাও', 'তীব্র ey' means 'তীব্র এসিড'. Do not repeat garbled text. Then answer every visible part (ক), (খ), ")
-            append("(গ), (ঘ) separately in Bengali, 2-4 sentences each, with precise textbook definitions and ")
-            append("correct equations. Write each chemical equation on its own line inside \$\$...\$\$ using ")
-            append("\\rightarrow (or \\rightleftharpoons) and subscripts, like ")
-            append("\$\$\\mathrm{CH_4} + 2\\mathrm{O_2} \\rightarrow \\mathrm{CO_2} + 2\\mathrm{H_2O}\$\$. ")
-            append("Never write the word 'arrow'; use the symbol. Write only Bengali words (English chemical ")
-            append("names in brackets are fine); never use words from other languages such as Tamil or Hindi. ")
-            append("Do not write an essay; do not say that no picture was attached.]\n")
+            append("\n\n").append(ocrRule(subject)).append("\n")
             append(ocrText)
           } else if (!gemma.canSee && imageAtts.isNotEmpty()) {
             append("\n[This phone could not read the attached picture. Tell me that the picture's text could ")
@@ -438,7 +428,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             update(answerId) { it.copy(text = "") }
             onAnswerStart?.invoke(answerId, voice)
             status = "Checking the answer…"
-            prompt = REVIEW_RULE
+            prompt = reviewRule(subject)
             continue
           }
           break
@@ -770,21 +760,67 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       "Answer my question now using those results and what you know. Never say you have no " +
         "information: if the results are thin, say what you found and give your best answer."
 
-    /** After an OCR answer, one review turn catches wrong definitions and equations. */
-    const val REVIEW_RULE =
-      "Rewrite your previous answer, correcting any factual mistake. Do not comment on this request " +
-        "or mention that you are checking; output only the corrected answer. Keep every part the user " +
-        "asked for: if the previous answer covered (ক), (খ), (গ), (ঘ), the corrected answer must cover " +
-        "all four and never drop one. For chemistry: a one-way reaction proceeds in only one direction; " +
-        "chemical equilibrium is dynamic (forward and reverse reactions continue at equal rates) and " +
-        "the concentrations stay constant, not necessarily equal; burning natural gas is simply দহন বিক্রিয়া " +
-        "(combustion), an exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O); do not invent reaction " +
-        "names. A one-way example must truly go one way, such as CaCO₃ → CaO + CO₂ in an open vessel or " +
-        "Zn + H₂SO₄ → ZnSO₄ + H₂; ammonia synthesis is reversible and must not be used as a one-way " +
-        "example. Incomplete combustion (not enough oxygen) leaves soot/carbon and CO, so a black " +
-        "deposit means wasted fuel, not complete combustion. Reaction names must match the equations " +
-        "(2Na + Cl₂ → 2NaCl is a সংযোজন reaction). Write only Bengali words, never words from other " +
-        "languages, and use → in equations instead of the word 'arrow'. Keep each part to 2-4 sentences, in Bengali."
+    /**
+     * Prompt for answers read from a picture. Only the subject's own rules are added, so a physics
+     * or economics page never receives chemistry facts.
+     */
+    internal fun ocrRule(subject: Subject): String = buildString {
+      append("[The text below was read from my picture by on-device OCR and may contain mistakes. ")
+      append("First silently repair obvious OCR errors using the subject and context: a Latin-looking ")
+      append("fragment inside a Bengali sentence is usually a misread Bengali word; a garbled word ")
+      append("beside a known term is that term; broken formulas should be rebuilt from the surrounding ")
+      append("names. Do not repeat garbled text. Then answer every visible part separately in Bengali, ")
+      append("2-4 sentences each, with precise textbook definitions. Write only Bengali words (English ")
+      append("technical names in brackets are fine); never use words from other languages. ")
+      when (subject) {
+        Subject.CHEMISTRY -> append(
+          "Known slips in Bengali chemistry text: 'সমাণুকরণ' is usually 'সংযোজন', 'Be' is 'যুক্তি', " +
+            "'ey' is 'এসিড'. Write each chemical equation on its own line inside \$\$...\$\$ using " +
+            "\\rightarrow (or \\rightleftharpoons) and subscripts, like " +
+            "\$\$\\mathrm{CH_4} + 2\\mathrm{O_2} \\rightarrow \\mathrm{CO_2} + 2\\mathrm{H_2O}\$\$. " +
+            "Never write the word 'arrow'; use the symbol. "
+        )
+        Subject.PHYSICS -> append(
+          "Write formulas with standard symbols and units, each on its own line inside \$\$...\$\$. "
+        )
+        Subject.ECONOMICS, Subject.GENERAL -> {}
+      }
+      append("Do not write an essay; do not say that no picture was attached.]")
+    }
+
+    /** After an OCR answer: a generic correctness pass plus rules for the detected subject only. */
+    internal fun reviewRule(subject: Subject): String = buildString {
+      append("Rewrite your previous answer, correcting any factual mistake. Do not comment on this ")
+      append("request or mention that you are checking; output only the corrected answer. Keep every ")
+      append("part the user asked for: if the previous answer covered every part, the corrected answer ")
+      append("must cover all of them and never drop one. Check the answer against the passage: ")
+      append("definitions, examples, equations, units and numbers. An example must not contradict the ")
+      append("definition. Do not invent names, data or formulas. Write only Bengali words, never words ")
+      append("from other languages, and use the subject's standard notation. Keep each part to 2-4 ")
+      append("sentences, in Bengali. ")
+      when (subject) {
+        Subject.CHEMISTRY -> append(
+          "For chemistry: a one-way reaction proceeds in only one direction; equilibrium is dynamic " +
+            "with equal forward and reverse rates and concentrations that stay constant (not " +
+            "necessarily equal). Use a truly one-way example such as CaCO₃ → CaO + CO₂ in an open " +
+            "vessel or Zn + H₂SO₄ → ZnSO₄ + H₂; ammonia synthesis is reversible. Burning natural gas " +
+            "is simply দহন বিক্রিয়া, an exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O). " +
+            "Incomplete combustion leaves soot/carbon and CO, so a black deposit means wasted fuel, " +
+            "not complete combustion. Reaction names must match the equations. Use → in equations, " +
+            "never the word 'arrow'."
+        )
+        Subject.PHYSICS -> append(
+          "For physics: check that units match on both sides of every formula, that directions and " +
+            "signs are correct, and that the law is applied to the right situation. Do not mix scalar " +
+            "and vector quantities."
+        )
+        Subject.ECONOMICS -> append(
+          "For economics: check that definitions, assumptions and cause-effect direction are correct; " +
+            "do not invent data, dates or figures."
+        )
+        Subject.GENERAL -> {}
+      }
+    }
 
     /** When the phone has no internet: answer anyway, but say it may be old. */
     const val OFFLINE_RULE =
@@ -813,3 +849,45 @@ internal fun keepBengali(text: String): String =
         code !in 0xAC00..0xD7AF    // Hangul
       )
   }
+
+/** Which textbook subject a picture belongs to; controls which review hints are allowed. */
+internal enum class Subject { GENERAL, CHEMISTRY, PHYSICS, ECONOMICS }
+
+private val CHEM_WORDS = listOf(
+  "রাসায়নিক", "বিক্রিয়া", "সমীকরণ", "জারণ", "বিজারণ", "যৌগ", "পরমাণু", "অম্ল", "ক্ষার",
+  "লবণ", "প্রশমন", "সংযোজন", "বিয়োজন", "সালফার", "নাইট্রো", "হাইড্রো", "কার্বন", "অক্সিজেন",
+  "মিথেন", "দহন", "nacl", "h2so4", "caco3", "chemistry",
+)
+private val PHYSICS_WORDS = listOf(
+  "বেগ", "ত্বরণ", "ঘর্ষণ", "শক্তি", "ক্ষমতা", "চাপ", "তাপমাত্রা", "বিদ্যুৎ", "চুম্বক",
+  "তরঙ্গ", "শব্দ", "নিউটন", "মহাকর্ষ", "কৌণিক", "velocity", "acceleration", "force",
+  "energy", "newton", "physics",
+)
+private val ECONOMICS_WORDS = listOf(
+  "অর্থনীতি", "চাহিদা", "যোগান", "বাজার", "মূল্য", "মুদ্রা", "ব্যাংক", "বাজেট", "উৎপাদন",
+  "ভোগ", "সঞ্চয়", "বিনিয়োগ", "মুদ্রাস্ফীতি", "জিডিপি", "demand", "supply", "inflation",
+  "gdp", "economics",
+)
+
+/**
+ * Two clear subject words are enough; anything weaker stays GENERAL, which receives the plain
+ * review with no subject facts. This is what stops chemistry hints leaking into other subjects.
+ */
+internal fun subjectOf(text: String): Subject {
+  // Bengali "য়"/"ড়" can be one codepoint or a letter plus a combining mark; NFC + \p{M} makes
+  // both spellings match the word lists.
+  fun norm(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC)
+  val t = norm(text.lowercase())
+  val tokens = t.split(Regex("[^\\p{L}\\p{M}\\p{N}]+")).filter { it.isNotBlank() }
+  fun hits(words: List<String>): Int = words.count { w ->
+    val nw = norm(w)
+    if (nw.any { it.code < 128 }) t.contains(nw) else tokens.any { it == nw || it.startsWith(nw) }
+  }
+  val scores = mapOf(
+    Subject.CHEMISTRY to hits(CHEM_WORDS),
+    Subject.PHYSICS to hits(PHYSICS_WORDS),
+    Subject.ECONOMICS to hits(ECONOMICS_WORDS),
+  )
+  val best = scores.maxByOrNull { it.value }!!
+  return if (best.value >= 2) best.key else Subject.GENERAL
+}
