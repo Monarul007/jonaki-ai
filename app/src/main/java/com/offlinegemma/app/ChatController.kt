@@ -298,10 +298,54 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       try {
         if (rebuild != null) gemma.startChat(history(rebuild))
         // Pictures and voice go to the model only if this phone loaded the image/audio parts.
-        val images = if (gemma.canSee) attachments.filter { it.kind == Attachment.Kind.IMAGE }.mapNotNull { readBytes(it) } else emptyList()
+        val imageAtts = attachments.filter { it.kind == Attachment.Kind.IMAGE }
+        val images = if (gemma.canSee) imageAtts.mapNotNull { readBytes(it) } else emptyList()
         val audio = if (gemma.canHear) attachments.filter { it.kind == Attachment.Kind.AUDIO }.mapNotNull { readBytes(it) } else emptyList()
-        val skipped = attachments.count { it.kind != Attachment.Kind.DOC } - images.size - audio.size
-        val text = if (skipped > 0) "$modelText\n[$skipped attachment(s) skipped: this phone loaded Jonaki AI without pictures and sound.]" else modelText
+
+        // No vision on this load: read the text in the picture on the phone (Bengali + English).
+        // Without this the photo used to be dropped silently and the model said "no image".
+        var ocrText = ""
+        if (!gemma.canSee && imageAtts.isNotEmpty()) {
+          status = "Reading the text in the picture…"
+          ocrText = imageAtts.mapNotNull { a ->
+            Ocr.readText(app, a.ocrPath ?: a.path).takeIf { it.length >= 12 }
+          }.joinToString("\n\n")
+          status = null
+          update(answerId) {
+            it.copy(tools = it.tools + if (ocrText.isNotBlank()) {
+              ToolUse("ocr", "read the picture", true, ocrText.take(2000))
+            } else {
+              ToolUse("ocr", "read the picture", false, "no readable text")
+            })
+          }
+        }
+
+        val skippedAudio = attachments.count { it.kind == Attachment.Kind.AUDIO } - audio.size
+        val text = buildString {
+          append(modelText)
+          if (ocrText.isNotBlank()) {
+            append("\n\n[The text below was read from my picture by on-device OCR and may contain mistakes. ")
+            append("First silently repair obvious OCR errors using the subject and context: a Latin-looking ")
+            append("fragment inside a Bengali sentence is usually a misread Bengali word, a garbled word beside ")
+            append("'বিক্রিয়া' is a reaction name, and broken chemical formulas should be rebuilt from the ")
+            append("surrounding names. Known slips on Bengali chemistry pages: 'সমাণুকরণ' means 'সংযোজন', ")
+            append("'Be দাও' means 'যুক্তি দাও', 'তীব্র ey' means 'তীব্র এসিড'. Do not repeat garbled text. Then answer every visible part (ক), (খ), ")
+            append("(গ), (ঘ) separately in Bengali, 2-4 sentences each, with precise textbook definitions and ")
+            append("correct equations. Write each chemical equation on its own line inside \$\$...\$\$ using ")
+            append("\\rightarrow (or \\rightleftharpoons) and subscripts, like ")
+            append("\$\$\\mathrm{CH_4} + 2\\mathrm{O_2} \\rightarrow \\mathrm{CO_2} + 2\\mathrm{H_2O}\$\$. ")
+            append("Never write the word 'arrow'; use the symbol. Write only Bengali words (English chemical ")
+            append("names in brackets are fine); never use words from other languages such as Tamil or Hindi. ")
+            append("Do not write an essay; do not say that no picture was attached.]\n")
+            append(ocrText)
+          } else if (!gemma.canSee && imageAtts.isNotEmpty()) {
+            append("\n[This phone could not read the attached picture. Tell me that the picture's text could ")
+            append("not be read on this phone; do not say that no picture was attached.]")
+          }
+          if (skippedAudio > 0) {
+            append("\n[$skippedAudio audio clip(s) skipped: this phone loaded Jonaki AI without sound.]")
+          }
+        }
         compactIfNeeded(text.length + images.size * IMAGE_TOKENS * CHARS_PER_TOKEN + audio.sumOf { it.size } / 32000 * AUDIO_TOKENS_PER_SEC * CHARS_PER_TOKEN)
         val start = System.currentTimeMillis()
         onAnswerStart?.invoke(answerId, voice)
@@ -326,6 +370,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var nudged = false
         var pushed = false
         var refused = false
+        var reviewed = false
+        val usedOcr = ocrText.isNotBlank()
+        // A Bengali question must get a Bengali answer; the model sometimes mixes in Tamil/Hindi.
+        val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
         while (true) {
           var out = ""
           gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList())
@@ -333,8 +381,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             .collect { piece ->
               out += piece
               val shown = if (agent) Tools.stripCalls(out) else out
-              update(answerId) { it.copy(text = shown) }
-              onAnswerText?.invoke(answerId, shown)
+              val safe = if (bengaliAnswer) keepBengali(shown) else shown
+              update(answerId) { it.copy(text = safe) }
+              onAnswerText?.invoke(answerId, safe)
             }
           first = false
           if (agent) {
@@ -380,6 +429,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             val usable = results.isNotBlank() && !results.startsWith("Error") && !results.startsWith("No results")
             prompt = (if (usable) "Tool result for web_search:\n$results\n\n" else "") + REFUSAL_RULE +
               (if (offline) " " + OFFLINE_RULE else "")
+            continue
+          }
+          // A page read by OCR can carry mistakes and the small model can slip on basic facts.
+          // One review turn fixes definitions and equations before the answer is final.
+          if (usedOcr && !reviewed && out.isNotBlank()) {
+            reviewed = true
+            update(answerId) { it.copy(text = "") }
+            onAnswerStart?.invoke(answerId, voice)
+            status = "Checking the answer…"
+            prompt = REVIEW_RULE
             continue
           }
           break
@@ -711,9 +770,40 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       "Answer my question now using those results and what you know. Never say you have no " +
         "information: if the results are thin, say what you found and give your best answer."
 
+    /** After an OCR answer, one review turn catches wrong definitions and equations. */
+    const val REVIEW_RULE =
+      "Rewrite your previous answer, correcting any factual mistake. Do not comment on this request " +
+        "or mention that you are checking; output only the corrected answer. For chemistry: a " +
+        "one-way reaction proceeds in only one direction; chemical equilibrium is dynamic (forward " +
+        "and reverse reactions continue at equal rates); burning natural gas is combustion, an " +
+        "exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O). Reaction names must match the equations " +
+        "(2Na + Cl₂ → 2NaCl is a সংযোজন reaction). Write only Bengali words, never words from other " +
+        "languages, and use → in equations instead of the word 'arrow'. Keep each part to 2-4 sentences, in Bengali."
+
     /** When the phone has no internet: answer anyway, but say it may be old. */
     const val OFFLINE_RULE =
       "I am offline right now. Answer from your own knowledge and add a short note that this may " +
         "be out of date. Never say you have no information."
   }
 }
+
+/**
+ * Drops Indic-script letters that are not Bengali. The small model occasionally slips in a
+ * Tamil or Hindi word; a Bengali answer should not show them. Latin text, digits and symbols
+ * (chemical formulas, arrows) are kept.
+ */
+internal fun keepBengali(text: String): String =
+  text.filter { c ->
+    val code = c.code
+    // Keep Bengali; drop the foreign writing systems the small model sometimes slips into.
+    code in 0x0980..0x09FF || (
+      code !in 0x0530..0x06FF &&   // Armenian, Hebrew, Arabic
+        code !in 0x0900..0x0DFF && // Indic scripts other than Bengali
+        code !in 0x0E00..0x0E7F && // Thai
+        code !in 0x10A0..0x10FF && // Georgian
+        code !in 0x1100..0x11FF && // Hangul Jamo
+        code !in 0x3040..0x30FF && // Japanese kana
+        code !in 0x3400..0x4DBF && code !in 0x4E00..0x9FFF && // Chinese/Japanese kanji
+        code !in 0xAC00..0xD7AF    // Hangul
+      )
+  }

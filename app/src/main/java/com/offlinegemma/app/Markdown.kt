@@ -27,6 +27,8 @@ object Markdown {
     data class Quote(val text: String) : Block()
     data class Code(val lang: String, val body: String) : Block()
     data class Math(val tex: String) : Block()
+    /** A chemistry equation shown on its own card, with real arrows and subscripts. */
+    data class Chem(val text: String) : Block()
     data class Table(val head: List<String>, val rows: List<List<String>>) : Block()
     data object Rule : Block()
     /** A live HTML demo. [closed] = false while still streaming. */
@@ -43,6 +45,22 @@ object Markdown {
   private val TABLE_SEP = Regex("""^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$""")
   private val UL = Regex("""^\s*[-*+•]\s+(.*)$""")
   private val OL = Regex("""^\s*(\d+)[.)]\s+(.*)$""")
+  private val CHEM_ARROW = Regex("""(?i)(\barrow\b|->|⟶|→|⇌|rightleftharpoons|<=>)""")
+  private val CHEM_ELEMENT = Regex("""\b[A-Z][a-z]?\d*""")
+
+  /** A line that is a chemical equation (an arrow plus at least two element-like tokens). */
+  fun isChemLine(s: String): Boolean =
+    CHEM_ARROW.containsMatchIn(s) && CHEM_ELEMENT.findAll(s).count() >= 2
+
+  /** Plain chemistry text -> real arrows and subscripts for a tidy equation card. */
+  fun chem(src: String): String {
+    var s = src.trim()
+    s = Regex("""(?i)\s*(?:\barrow\b|->|⟶|—>)\s*""").replace(s, " → ")
+    s = Regex("""(?i)\s*(?:⇌|rightleftharpoons|<=>)\s*""").replace(s, " ⇌ ")
+    // H2O, CO2, H2SO4, Ca(OH)2 -> real subscripts. A leading coefficient (2H2O) stays normal.
+    s = Regex("""(?<=[A-Za-z)])(\d+)""").replace(s) { "$SUB_ON${it.groupValues[1]}$SUB_OFF" }
+    return s.trim()
+  }
 
   fun parse(src: String): List<Block> {
     // Markers written inside a sentence or a bullet are lifted onto their own line.
@@ -70,9 +88,12 @@ object Markdown {
         val closed = i < lines.size
         i++
         val body = buf.joinToString("\n")
+        val single = body.trim()
         when {
           (lang == "html" || lang == "htm") && (!closed || DEMO_TAGS.containsMatchIn(body)) -> out.add(Block.Demo(body, closed))
           lang == "svg" && closed && Regex("<svg[\\s>]", RegexOption.IGNORE_CASE).containsMatchIn(body) -> out.add(Block.Svg(body))
+          // A model sometimes fences a single reaction as a code block; show it as an equation card.
+          (lang.isEmpty() || lang == "text" || lang == "chem") && !single.contains('\n') && isChemLine(single) -> out.add(Block.Chem(single))
           else -> out.add(Block.Code(lang, body))
         }
         continue
@@ -130,6 +151,8 @@ object Markdown {
         continue
       }
       if (line.isBlank()) { flush(); i++; continue }
+      // A standalone reaction gets its own styled card instead of running inside a paragraph.
+      if (isChemLine(line)) { flush(); out.add(Block.Chem(line.trim())); i++; continue }
       para.add(line)
       i++
     }
@@ -162,12 +185,17 @@ object Markdown {
   /** TeX -> readable text with super/subscript markers (same rules as chat.html tex()). */
   fun tex(expr: String): String {
     var s = expr
+    // Last-ditch safety: the model sometimes writes the English word instead of the symbol.
+    s = Regex("""\barrow\b""", RegexOption.IGNORE_CASE).replace(s, "→")
+    s = s.replace("<=>", "⇌")
     s = s.replace(Regex("""\\(?:text|mathrm|mathbf|mathit|textrm|ce|operatorname)\{([^{}]*)\}"""), "$1")
     repeat(2) { s = s.replace(Regex("""\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}"""), "($1)/($2)") }
     s = s.replace(Regex("""\(([A-Za-z0-9.]+)\)/\(([A-Za-z0-9.]+)\)"""), "$1/$2")
     s = s.replace(Regex("""\\sqrt\{([^{}]*)\}"""), "√($1)")
     s = s.replace("\\_", "_")
-    s = s.replace("\\left", "").replace("\\right", "")
+    // Only the standalone commands: removing "\\right" from "\\rightarrow" left the word "arrow".
+    s = s.replace(Regex("""\\left(?![A-Za-z])"""), "")
+    s = s.replace(Regex("""\\right(?![A-Za-z])"""), "")
     s = Regex("""\\([A-Za-z]+)""").replace(s) { m ->
       val name = m.groupValues[1]
       TEX_SYMBOLS[name] ?: if (name in TEX_WORDS) name else m.value
@@ -202,6 +230,10 @@ object Markdown {
     fun keep(x: Stashed): String { stash.add(x); return "$STASH${stash.size - 1}$STASH_END" }
     var s = text
     s = Regex("`([^`\\n]+)`").replace(s) { keep(Stashed.Code(it.groupValues[1])) }
+    // The model sometimes writes the English word "arrow" (or ->) instead of the symbol.
+    s = Regex("""\barrow\b""", RegexOption.IGNORE_CASE).replace(s, "→")
+    s = Regex("""\s*<=>\s*""").replace(s, " ⇌ ")
+    s = s.replace("->", "→")
     s = Regex("""\$\$([\s\S]+?)\$\$""").replace(s) { "$MATH_ON${tex(it.groupValues[1])}$MATH_OFF" }
     s = Regex("""\\\[([\s\S]+?)\\\]""").replace(s) { "$MATH_ON${tex(it.groupValues[1])}$MATH_OFF" }
     s = Regex("""\$([^$\n]+?)\$""").replace(s) { "$MATH_ON${tex(it.groupValues[1])}$MATH_OFF" }

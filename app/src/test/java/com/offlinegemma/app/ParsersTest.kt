@@ -128,6 +128,49 @@ class MathTest {
     assertTrue(s.startsWith("1/2"))
     assertTrue(s.contains("${Markdown.SUP_ON}2${Markdown.SUP_OFF}"))
   }
+
+  @Test fun chemistryTexGivesArrowAndSubscripts() {
+    val s = Markdown.tex("\\text{CH}_4 + 2\\text{O}_2 \\rightarrow \\text{CO}_2 + 2\\text{H}_2\\text{O}")
+    assertTrue(s, s.contains("→"))
+    assertTrue(s, s.contains("${Markdown.SUB_ON}4${Markdown.SUB_OFF}"))
+    assertFalse(s, s.contains("arrow"))
+  }
+}
+
+class ChemistryTextTest {
+  @Test fun aReactionBecomesItsOwnCard() {
+    val blocks = Markdown.parse("CH4 + 2O2 -> CO2 + 2H2O")
+    assertTrue(blocks.single() is Markdown.Block.Chem)
+  }
+
+  @Test fun arrowsBecomeSymbolsAndFormulasGetSubscripts() {
+    val shown = Markdown.chem("CH4 + 2O2 arrow CO2 + 2H2O")
+    assertTrue(shown.contains("→"))
+    assertTrue(shown.contains("${Markdown.SUB_ON}4${Markdown.SUB_OFF}"))
+    assertTrue(shown.contains("${Markdown.SUB_ON}2${Markdown.SUB_OFF}"))
+    assertFalse(shown.contains("arrow"))
+    assertFalse(shown.contains("->"))
+  }
+
+  @Test fun reversibleArrowAndBrackets() {
+    val shown = Markdown.chem("N2 + 3H2 <=> 2NH3")
+    assertTrue(shown.contains("⇌"))
+    val hydroxide = Markdown.chem("Ca(OH)2 -> CaO + H2O")
+    assertTrue(hydroxide.contains(")${Markdown.SUB_ON}2${Markdown.SUB_OFF}"))
+    assertFalse(hydroxide.contains(")2"))
+  }
+}
+
+class BengaliTextTest {
+  @Test fun keepsBengaliAndFormulasButDropsOtherLanguages() {
+    val s = keepBengali("প্রশ্ন சரிபார்ப்பு 明显的 したがって CH4 + 2O2 → CO2")
+    assertTrue(s.contains("প্রশ্ন"))
+    assertTrue(s.contains("CH4"))
+    assertTrue(s.contains("→"))
+    assertFalse(s.contains("சரி"))
+    assertFalse(s.contains("明显"))
+    assertFalse(s.contains("したがって"))
+  }
 }
 
 class VoiceTest {

@@ -8,8 +8,17 @@ import org.json.JSONObject
 
 enum class Who { USER, MODEL, NOTICE }
 
-/** A picture, voice clip or document attached to a message. [path] is a file inside the app. */
-data class Attachment(val kind: Kind, val name: String, val path: String, val chars: Int = 0) {
+/**
+ * A picture, voice clip or document attached to a message. [path] is a file inside the app.
+ * [ocrPath] is an optional sharper copy of a picture, kept only so OCR can read small text.
+ */
+data class Attachment(
+  val kind: Kind,
+  val name: String,
+  val path: String,
+  val chars: Int = 0,
+  val ocrPath: String? = null,
+) {
   enum class Kind { IMAGE, AUDIO, DOC }
 }
 
@@ -104,8 +113,10 @@ class ChatStore(context: Context) {
     put("who", l.who.name)
     put("text", l.text)
     if (l.display != l.text) put("display", l.display)
-    if (l.attachments.isNotEmpty()) put("att", JSONArray(l.attachments.map {
-      JSONObject().put("k", it.kind.name).put("n", it.name).put("p", it.path).put("c", it.chars)
+    if (l.attachments.isNotEmpty()) put("att", JSONArray(l.attachments.map { a ->
+      JSONObject().put("k", a.kind.name).put("n", a.name).put("p", a.path).put("c", a.chars).apply {
+        a.ocrPath?.let { put("o", it) }
+      }
     }))
     if (l.tools.isNotEmpty()) put("tools", JSONArray(l.tools.map {
       JSONObject().put("n", it.name).put("d", it.detail).put("ok", it.ok ?: false).put("r", it.result.take(2000))
@@ -126,7 +137,12 @@ class ChatStore(context: Context) {
       who = runCatching { Who.valueOf(o.getString("who")) }.getOrDefault(Who.NOTICE),
       text = text,
       display = o.optString("display", text),
-      attachments = arr("att") { Attachment(Attachment.Kind.valueOf(it.getString("k")), it.optString("n"), it.optString("p"), it.optInt("c")) },
+      attachments = arr("att") {
+        Attachment(
+          Attachment.Kind.valueOf(it.getString("k")), it.optString("n"), it.optString("p"),
+          it.optInt("c"), it.optString("o").ifEmpty { null },
+        )
+      },
       tools = arr("tools") { ToolUse(it.optString("n"), it.optString("d"), it.optBoolean("ok"), it.optString("r")) },
       sources = arr("src") { Source(it.optString("t"), it.optString("u")) },
       topic = o.optString("topic").ifEmpty { null },
