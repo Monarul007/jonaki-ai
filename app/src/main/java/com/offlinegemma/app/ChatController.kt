@@ -403,7 +403,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           // Refusal safety net (agent.py REFUSAL_RX): never let "I have no information" be the
           // final word. Throw the refusal away (do not save or speak it), look it up, ask once more.
-          if (!refused && out.isNotBlank() && Tools.REFUSAL_RX.containsMatchIn(out.take(600))) {
+          if (!refused && out.isNotBlank() && Tools.isUnsure(out)) {
             refused = true
             turn++
             update(answerId) { it.copy(text = "") }
@@ -435,7 +435,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         }
         val secs = (System.currentTimeMillis() - start) / 1000.0
         // A lesson without a picture gets one, like a textbook page (saved with the marker in it).
-        if (!testCode) update(answerId) { it.copy(text = Tutor.ensureFigure(it.text, topic)) }
+        if (!testCode) update(answerId) {
+          it.copy(text = Tutor.ensureFigure(it.text, topic, unsure = Tools.isUnsure(it.text)))
+        }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
         // Pictures are found after the answer, one at a time; never while talk mode is speaking.
         if (!voice) findFigures = answerId to (topic ?: display)
