@@ -775,8 +775,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       "Rewrite your previous answer, correcting any factual mistake. Do not comment on this request " +
         "or mention that you are checking; output only the corrected answer. For chemistry: a " +
         "one-way reaction proceeds in only one direction; chemical equilibrium is dynamic (forward " +
-        "and reverse reactions continue at equal rates); burning natural gas is combustion, an " +
-        "exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O). Reaction names must match the equations " +
+        "and reverse reactions continue at equal rates); burning natural gas is simply দহন বিক্রিয়া " +
+        "(combustion), an exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O); do not invent reaction " +
+        "names. Incomplete combustion (not enough oxygen) leaves soot/carbon and CO, so a black " +
+        "deposit means wasted fuel, not complete combustion. Reaction names must match the equations " +
         "(2Na + Cl₂ → 2NaCl is a সংযোজন reaction). Write only Bengali words, never words from other " +
         "languages, and use → in equations instead of the word 'arrow'. Keep each part to 2-4 sentences, in Bengali."
 
