@@ -62,6 +62,6 @@ The release key is deliberately outside the repo (`~/.android-keys/offlinegemma.
 
 ## Status
 
-Version **1.0.1** (`versionCode 3`). The photo path uses an in-app CameraX preview: launching
+Version **1.0.2** (`versionCode 4`). The photo path uses an in-app CameraX preview: launching
 the phone's camera app made MIUI's `camopt_killer` SIGKILL the process (model included) as soon
 as the shutter was pressed. See `AGENTS.md` and `KNOWLEDGE.md` for the evidence.
