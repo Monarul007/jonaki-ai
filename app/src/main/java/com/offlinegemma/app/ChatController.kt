@@ -41,7 +41,19 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   var loadError by mutableStateOf<String?>(null); private set
   var busy by mutableStateOf(false); private set
   /** Short status under the top bar, e.g. "Compacting 6 earlier messages…". */
-  var status by mutableStateOf<String?>(null); private set
+  var statusStartedAt by mutableStateOf(0L); private set
+  private var statusState by mutableStateOf<String?>(null)
+  var status: String?
+    get() = statusState
+    private set(value) {
+      if (value == null) {
+        statusState = null
+        statusStartedAt = 0L
+      } else {
+        if (statusState != value) statusStartedAt = System.currentTimeMillis()
+        statusState = value
+      }
+    }
 
   private var nextId = 1L
   private var job: Job? = null
@@ -461,7 +473,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           // A page read by OCR can carry mistakes and the small model can slip on basic facts.
           // One review turn fixes definitions and equations before the answer is final.
-          if (usedOcr && !reviewed && out.isNotBlank()) {
+          // One-part requests are short and already checked by the verifier; a full review pass
+          // is a second model run and makes them feel stuck on a CPU phone.
+          val askedParts = Regex("""\((ক|খ|গ|ঘ)\)""").findAll(topic.orEmpty())
+            .map { it.groupValues[1] }.distinct().toList()
+          if (usedOcr && !reviewed && out.isNotBlank() && askedParts.size != 1) {
             reviewed = true
             rewriting = true
             status = "Checking the answer…"
@@ -474,10 +490,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           // Bounded confidence loop: every part answered, no uncertainty, sources present for a
           // web question, and at least one source named. Stops after MAX_RESEARCH_ROUNDS.
-          val questionForParts = listOfNotNull(
-            topic ?: display,
-            ocrText.takeIf { it.isNotBlank() },
-          ).joinToString("\n")
+          // If the user named parts ("only (ক)"), check only those; otherwise check the whole page.
+          val questionForParts = if (askedParts.isNotEmpty()) {
+            askedParts.joinToString(" ") { "($it)" }
+          } else {
+            listOfNotNull(topic ?: display, ocrText.takeIf { it.isNotBlank() }).joinToString("\n")
+          }
           val check = verifyAnswer(
             out,
             questionForParts,
@@ -931,7 +949,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("beside a known term is that term; broken formulas should be rebuilt from the surrounding ")
       append("names. Do not repeat garbled text. If the page has numbered statements (i), (ii), (iii) ")
       append("and lettered questions (ক), (খ), (গ), (ঘ), the numbered lines are the stimulus: answer the ")
-      append("lettered questions only, not the equations. Then answer every visible part separately in ")
+      append("lettered questions only, not the equations. If my question asks for only one part (for ")
+      append("example only (ক)), answer only that part. Otherwise answer every visible part separately in ")
       append("Bengali, 2-4 sentences each, with precise textbook definitions. Write only Bengali words ")
       append("(English technical names in brackets are fine); never use words from other languages. ")
       when (subject) {
@@ -960,7 +979,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("Rewrite your previous answer, correcting any factual mistake. Do not comment on this ")
       append("request or mention that you are checking; output only the corrected answer. Keep every ")
       append("part the user asked for: if the previous answer covered every part, the corrected answer ")
-      append("must cover all of them and never drop one. Check the answer against the passage: ")
+      append("must cover all of them and never drop one. If my question asked for only one part, keep ")
+      append("only that part and do not add the others. Check the answer against the passage: ")
       append("definitions, examples, equations, units and numbers. An example must not contradict the ")
       append("definition. Do not invent names, data or formulas. Write only Bengali words, never words ")
       append("from other languages, and use the subject's standard notation. Keep each part to 2-4 ")

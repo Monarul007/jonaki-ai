@@ -90,6 +90,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Calendar
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -101,6 +102,14 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   var sheet by rememberSaveable { mutableStateOf(false) }
   var viewing by remember { mutableStateOf<ViewItem?>(null) }
   var cameraOpen by rememberSaveable { mutableStateOf(false) }
+  // Once a second while a background step runs, so "Checking…" never looks frozen.
+  var clock by remember { mutableStateOf(System.currentTimeMillis()) }
+  LaunchedEffect(chat.status) {
+    while (chat.status != null) {
+      clock = System.currentTimeMillis()
+      delay(1000)
+    }
+  }
   viewing?.let { Viewer(it, onClose = { viewing = null }) }
   // Text shared into the app from another app.
   LaunchedEffect(chat.sharedText) { chat.sharedText?.let { input = it; chat.sharedText = null } }
@@ -155,7 +164,27 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
                 else -> ""
               }
               if (sub.isNotEmpty()) {
-                Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val working = chat.status != null
+                val secs = if (working && chat.statusStartedAt > 0) {
+                  ((clock - chat.statusStartedAt) / 1000).coerceAtLeast(0)
+                } else 0
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                  if (working) {
+                    CircularProgressIndicator(
+                      modifier = Modifier.size(12.dp),
+                      strokeWidth = 1.5.dp,
+                      color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(6.dp))
+                  }
+                  Text(
+                    if (working && secs > 0) "$sub · ${secs}s" else sub,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                }
               }
             }
           },
