@@ -543,7 +543,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             if (bengaliAnswer) "দুঃখিত, এই মুহূর্তে উত্তরটি তৈরি করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।"
             else "Sorry, I couldn't produce an answer. Please try again."
           } else it.text
-          it.copy(text = Tutor.ensureFigure(shown, topic, unsure = Tools.isUnsure(shown)))
+          it.copy(
+            text = Tutor.ensureFigure(
+              shown, topic, unsure = Tools.isUnsure(shown),
+              source = ocrText.takeIf { it.isNotBlank() },
+            ),
+          )
         }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
         // Pictures are found after the answer, one at a time; never while talk mode is speaking.
