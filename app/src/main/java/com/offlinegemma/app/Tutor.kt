@@ -146,14 +146,32 @@ object Tutor {
    * Lessons that came back without a picture get one, like a textbook page (chat.html ensureFigure).
    * [question] is the user's own typed question (null for tutor buttons, quizzes, fixes).
    */
-  fun ensureFigure(out: String, question: String?, unsure: Boolean = false): String {
+  fun ensureFigure(
+    out: String,
+    question: String?,
+    unsure: Boolean = false,
+    source: String? = null,
+  ): String {
     if (question == null || out.isBlank() || FIG_INLINE.containsMatchIn(out)) return out
     val lesson = LESSON_RX.containsMatchIn(question)
-    if (!lesson && !unsure) return out
-    // A confident lesson needs a real explanation before a picture; an unsure answer needs help now.
-    if (!unsure && out.length < 500) return out
+    val page = source?.takeIf { it.isNotBlank() }
+    val partsPage = page != null && Regex("""\((ক|খ|গ|ঘ)\)""").containsMatchIn(page)
+    val explanatory = partsPage ||
+      Regex("""কাকে বলে|কী\?|কি\?|ব্যাখ্যা|প্রক্রিয়া|পরীক্ষা|সংজ্ঞা""").containsMatchIn(question)
+    if (!lesson && !unsure && !explanatory) return out
+    // A confident lesson or an OCR question page needs a real explanation before a picture;
+    // an unsure answer needs help immediately.
+    if (!unsure) {
+      val need = if (lesson) 500 else 250
+      if (out.length < need) return out
+    }
     if (Regex("```html", RegexOption.IGNORE_CASE).containsMatchIn(out) || Regex("^\\(.*\\)$").matches(out.trim())) return out
-    val q = topicQuery(question)
+    var q = topicQuery(question)
+    // "Answer the picture" has no useful search words: take the first lettered question's topic.
+    if ((q.length < 3 || q.contains("ছবি") || q.contains("প্রশ্ন")) && page != null) {
+      val first = Regex("""\((?:ক|a|i)\)\s*([^\n?।]{2,50})""").find(page)?.groupValues?.get(1)
+      if (first != null) q = topicQuery(first)
+    }
     if (q.length < 3) return out
     val tag = "[FIGURE: $q diagram]"
     val cut = Regex("\\n\\s*\\n").find(out)?.range?.first ?: -1 // after the first paragraph

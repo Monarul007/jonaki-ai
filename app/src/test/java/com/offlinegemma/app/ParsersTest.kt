@@ -222,6 +222,14 @@ class FigureAndConfidenceTest {
   @Test fun bengaliTopicQueryDropsQuestionWords() {
     assertEquals("রাসায়নিক সাম্যাবস্থা", Tutor.topicQuery("রাসায়নিক সাম্যাবস্থা বলতে কী বোঝায়?"))
   }
+
+  @Test fun ocrPageGetsAFigureFromItsFirstQuestion() {
+    val q = "এই ছবিতে থাকা প্রশ্নগুলোর উত্তর দাও।"
+    val src = "(ক) ইলেকট্রোপ্লেটিং কী?\n(খ) তড়িৎ রাসায়নিক কোষে লবণ সেতু ব্যবহার করা হয় কেন?"
+    val a = "(ক) ইলেকট্রোপ্লেটিং হলো একটি প্রক্রিয়া যেখানে " + "ক".repeat(300)
+    val out = Tutor.ensureFigure(a, q, source = src)
+    assertTrue(out, out.contains("[FIGURE: ইলেকট্রোপ্লেটিং"))
+  }
 }
 
 class SubjectTest {
