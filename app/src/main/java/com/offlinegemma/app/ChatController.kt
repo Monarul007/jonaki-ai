@@ -773,11 +773,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     /** After an OCR answer, one review turn catches wrong definitions and equations. */
     const val REVIEW_RULE =
       "Rewrite your previous answer, correcting any factual mistake. Do not comment on this request " +
-        "or mention that you are checking; output only the corrected answer. For chemistry: a " +
-        "one-way reaction proceeds in only one direction; chemical equilibrium is dynamic (forward " +
-        "and reverse reactions continue at equal rates); burning natural gas is simply দহন বিক্রিয়া " +
+        "or mention that you are checking; output only the corrected answer. Keep every part the user " +
+        "asked for: if the previous answer covered (ক), (খ), (গ), (ঘ), the corrected answer must cover " +
+        "all four and never drop one. For chemistry: a one-way reaction proceeds in only one direction; " +
+        "chemical equilibrium is dynamic (forward and reverse reactions continue at equal rates) and " +
+        "the concentrations stay constant, not necessarily equal; burning natural gas is simply দহন বিক্রিয়া " +
         "(combustion), an exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O); do not invent reaction " +
-        "names. Incomplete combustion (not enough oxygen) leaves soot/carbon and CO, so a black " +
+        "names. A one-way example must truly go one way, such as CaCO₃ → CaO + CO₂ in an open vessel or " +
+        "Zn + H₂SO₄ → ZnSO₄ + H₂; ammonia synthesis is reversible and must not be used as a one-way " +
+        "example. Incomplete combustion (not enough oxygen) leaves soot/carbon and CO, so a black " +
         "deposit means wasted fuel, not complete combustion. Reaction names must match the equations " +
         "(2Na + Cl₂ → 2NaCl is a সংযোজন reaction). Write only Bengali words, never words from other " +
         "languages, and use → in equations instead of the word 'arrow'. Keep each part to 2-4 sentences, in Bengali."
