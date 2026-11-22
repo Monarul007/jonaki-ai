@@ -369,23 +369,34 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var sourceSearchTried = false
         var blankRetried = false
         var rewriting = false
+        var resetChat = false
         val usedOcr = ocrText.isNotBlank()
         // A Bengali question must get a Bengali answer; the model sometimes mixes in Tamil/Hindi.
         val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
         while (true) {
           var out = ""
-          gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList())
-            .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
-            .collect { piece ->
-              out += piece
-              // A review/verification rewrite is buffered off-screen; the first answer stays visible.
-              if (!rewriting) {
-                val shown = if (agent) Tools.stripCalls(out) else out
-                val safe = if (bengaliAnswer) keepBengali(shown) else shown
-                update(answerId) { it.copy(text = safe) }
-                onAnswerText?.invoke(answerId, safe)
+          try {
+            val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList())
+              .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
+            val limit = if (rewriting) ROUND_TIMEOUT_MS else FIRST_TIMEOUT_MS
+            kotlinx.coroutines.withTimeout(limit) {
+              flow.collect { piece ->
+                out += piece
+                // A review/verification rewrite is buffered off-screen; the first answer stays visible.
+                if (!rewriting) {
+                  val shown = if (agent) Tools.stripCalls(out) else out
+                  val safe = if (bengaliAnswer) keepBengali(shown) else shown
+                  update(answerId) { it.copy(text = safe) }
+                  onAnswerText?.invoke(answerId, safe)
+                }
               }
             }
+          } catch (t: kotlinx.coroutines.TimeoutCancellationException) {
+            // A stuck round must not hang the chat: stop the model and keep the best answer so far.
+            gemma.stop()
+            status = null
+            break
+          }
           first = false
           if (agent) {
             val calls = Tools.parseCalls(out)
@@ -454,7 +465,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             reviewed = true
             rewriting = true
             status = "Checking the answer…"
-            prompt = reviewRule(subject)
+            // Fresh compact context: the accumulated OCR prompt + full answer would overflow the window.
+            val prev = out.take(2500)
+            gemma.startChat(emptyList(), "")
+            resetChat = true
+            prompt = "Page text:\n${ocrText.take(1500)}\n\nYour previous answer:\n$prev\n\n" + reviewRule(subject)
             continue
           }
           // Bounded confidence loop: every part answered, no uncertainty, sources present for a
@@ -531,6 +546,20 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               }
               AnswerProblem.OK -> {}
             }
+            // Each verification round gets a bounded context too: page + previous answer + sources.
+            val prev = out.take(2500)
+            val context = buildString {
+              if (ocrText.isNotBlank()) append("Page text:\n${ocrText.take(1200)}\n\n")
+              append("Your previous answer:\n$prev\n\n")
+              if (found.isNotEmpty()) {
+                append("Sources:\n")
+                found.take(4).forEach { append("- ${it.title} — ${it.url}\n") }
+                append("\n")
+              }
+            }
+            gemma.startChat(emptyList(), "")
+            resetChat = true
+            prompt = context + prompt
             continue
           }
           break
@@ -551,6 +580,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           )
         }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
+        // A review/verifier reset used a compact context; give the chat its full memory back.
+        if (resetChat) gemma.startChat(history(lines))
         // Pictures are found after the answer, one at a time; never while talk mode is speaking.
         if (!voice) findFigures = answerId to (topic ?: display)
         if (testCode) fixCode = testAnswer(answerId, codeFixed)
@@ -863,6 +894,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     const val MAX_TOOL_TURNS = 4
     /** Extra look-up/rewrite rounds after the first answer (the refusal retry counts as one). */
     const val MAX_RESEARCH_ROUNDS = 3
+    const val FIRST_TIMEOUT_MS = 300_000L
+    const val ROUND_TIMEOUT_MS = 180_000L
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
 
