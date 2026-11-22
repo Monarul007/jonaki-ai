@@ -186,8 +186,8 @@ class Figures(context: Context) {
    * [query] = Gemma's figure words, [question] = what the student asked.
    * Searches with a few key words plus the topic (long phrases make Wikipedia return odd pages).
    */
-  suspend fun candidates(query: String, exclude: Collection<String>, question: String = ""): List<Candidate> = withContext(Dispatchers.IO) {
-    val words = searchWords(query, question)
+  suspend fun candidates(query: String, exclude: Collection<String>): List<Candidate> = withContext(Dispatchers.IO) {
+    val words = query.trim()
     fun search(w: String) = buildList {
       runCatching { addAll(wikiCandidates(w)) }
       runCatching { addAll(commonsCandidates(w)) }
@@ -197,7 +197,7 @@ class Figures(context: Context) {
     // article's English langlink, still with no hardcoded dictionary.
     if (found.isEmpty() && words.any { it in '\u0980'..'\u09FF' }) {
       val en = englishTitle(words)
-      if (en != null) found = search(searchWords(en, ""))
+      if (en != null) found = search(en)
     }
     val seen = exclude.toMutableSet()
     found.filter { c ->
@@ -236,21 +236,6 @@ class Figures(context: Context) {
     // Diagrams translated into other languages: "Photosynthesis-ru.svg" (but "-en" is fine).
     private val FOREIGN = Regex("""[-_ (](?!en\b)[a-z]{2}(?:-[a-z]+)?\)?\.(svg|png|jpg|jpeg|gif)$""", RegexOption.IGNORE_CASE)
     private val JUNK = Regex("logo|icon|flag|coat of arms|signature|portrait|stamp|map of|locator", RegexOption.IGNORE_CASE)
-
-    private val FILLER = setOf(
-      "a", "an", "the", "of", "on", "in", "its", "it", "how", "with", "and", "to", "that", "which", "for", "from",
-      "showing", "show", "shows", "different", "various", "illustration", "picture", "image", "photo", "simple",
-      "we", "have", "has", "our", "their", "is", "are", "do", "does", "why", "what",
-    )
-
-    /** At most 5 key words from the figure words, plus topic words from the question that are missing. */
-    fun searchWords(query: String, question: String): String {
-      fun keep(s: String) = Regex("[\\p{L}\\p{N}'-]+").findAll(s).map { it.value }.filter { it.lowercase() !in FILLER }.toList()
-      val q = keep(query).take(5)
-      val have = q.map { it.lowercase().trimEnd('s') }.toSet()
-      val topic = keep(Tutor.topicQuery(question)).filter { it.lowercase().trimEnd('s') !in have }.take(2)
-      return (topic + q).joinToString(" ").ifBlank { query }
-    }
 
     fun strip(html: String) = Html.fromHtml(html.replace(Regex("<[^>]+>"), " "), Html.FROM_HTML_MODE_LEGACY).toString().replace(Regex("\\s+"), " ").trim()
 

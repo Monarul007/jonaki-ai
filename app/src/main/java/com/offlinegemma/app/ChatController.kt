@@ -334,12 +334,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         }
 
         val skippedAudio = attachments.count { it.kind == Attachment.Kind.AUDIO } - audio.size
-        // The textbook page decides which subject rules apply; uncertain -> plain review, no subject facts.
-        val subject = subjectOf("$modelText\n$ocrText")
         val text = buildString {
           append(modelText)
           if (ocrText.isNotBlank()) {
-            append("\n\n").append(ocrRule(subject)).append("\n")
+            append("\n\n").append(ocrRule()).append("\n")
             append(ocrText)
           } else if (!gemma.canSee && imageAtts.isNotEmpty()) {
             append("\n[This phone could not read the attached picture. Tell me that the picture's text could ")
@@ -475,9 +473,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // One review turn fixes definitions and equations before the answer is final.
           // One-part requests are short and already checked by the verifier; a full review pass
           // is a second model run and makes them feel stuck on a CPU phone.
-          val askedParts = Regex("""\((ক|খ|গ|ঘ)\)""").findAll(topic.orEmpty())
-            .map { it.groupValues[1] }.distinct().toList()
-          if (usedOcr && !reviewed && out.isNotBlank() && askedParts.size != 1) {
+          if (usedOcr && !reviewed && out.isNotBlank()) {
             reviewed = true
             rewriting = true
             status = "Checking the answer…"
@@ -485,20 +481,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             val prev = out.take(2500)
             gemma.startChat(emptyList(), "")
             resetChat = true
-            prompt = "Page text:\n${ocrText.take(1500)}\n\nYour previous answer:\n$prev\n\n" + reviewRule(subject)
+            prompt = "Page text:\n${ocrText.take(1500)}\n\nYour previous answer:\n$prev\n\n" + reviewRule()
             continue
           }
           // Bounded confidence loop: every part answered, no uncertainty, sources present for a
           // web question, and at least one source named. Stops after MAX_RESEARCH_ROUNDS.
-          // If the user named parts ("only (ক)"), check only those; otherwise check the whole page.
-          val questionForParts = if (askedParts.isNotEmpty()) {
-            askedParts.joinToString(" ") { "($it)" }
-          } else {
-            listOfNotNull(topic ?: display, ocrText.takeIf { it.isNotBlank() }).joinToString("\n")
-          }
           val check = verifyAnswer(
             out,
-            questionForParts,
             found,
             needsWeb = links.isNotEmpty() || Tools.wantsWeb(topic ?: display),
             offline = offline,
@@ -509,16 +498,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             turn++
             rewriting = true
             status = when (check.problem) {
-              AnswerProblem.MISSING_PARTS -> "Checking the answer…"
               AnswerProblem.NOT_CITED -> "Checking sources…"
               else -> "Looking it up…"
             }
             when (check.problem) {
-              AnswerProblem.MISSING_PARTS -> {
-                prompt = "You did not answer ${check.detail}. Rewrite the complete answer, keeping every " +
-                  "part you already answered and adding ${check.detail}. Answer every part the user " +
-                  "asked for, in order, without dropping any. Keep the same language and facts."
-              }
               AnswerProblem.UNSURE -> {
                 if (out.isBlank()) {
                   if (blankRetried) break // one retry for an empty answer, then the fallback below
@@ -583,19 +566,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           break
         }
         val secs = (System.currentTimeMillis() - start) / 1000.0
-        // A lesson without a picture gets one, like a textbook page (saved with the marker in it).
         if (!testCode) update(answerId) {
           // Never leave an empty bubble: a last-resort message is better than silence.
           val shown = if (it.text.isBlank()) {
             if (bengaliAnswer) "দুঃখিত, এই মুহূর্তে উত্তরটি তৈরি করা যায়নি। অনুগ্রহ করে আবার চেষ্টা করুন।"
             else "Sorry, I couldn't produce an answer. Please try again."
           } else it.text
-          it.copy(
-            text = Tutor.ensureFigure(
-              shown, topic, unsure = Tools.isUnsure(shown),
-              source = ocrText.takeIf { it.isNotBlank() },
-            ),
-          )
+          it.copy(text = shown)
         }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
         // A review/verifier reset used a compact context; give the chat its full memory back.
@@ -631,7 +608,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     figStates[k]?.let { return it }
     if (!answer.done) return null // still streaming: "comes when the answer is done"
     val used = (1 until n).mapNotNull { (figStates["${answer.id}|$it"] as? FigState.Done)?.figure?.file }
-    val hit = figures.cached(Tutor.englishFigureQuery(query), used)
+    val hit = figures.cached(query, used)
     // Not stored here: this runs while the screen draws (the screen remembers it).
     return if (hit != null) FigState.Done(hit) else FigState.None("no picture saved yet", retry = true)
   }
@@ -639,7 +616,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** Finds pictures for every figure in an answer (after it finishes). */
   private fun startFigures(answerId: Long, question: String, only: Int? = null) {
     val answer = lines.getOrNull(indexOf(answerId)) ?: return
-    val queries = Tutor.figureQueries(answer.text).map { Tutor.englishFigureQuery(it) }
+    val queries = Tutor.figureQueries(answer.text)
     if (queries.isEmpty()) return
     busy = true
     job = scope.launch {
@@ -673,7 +650,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   /** One figure: search, download, let Gemma check it (YES/NO + caption), up to 3 tries. */
   private suspend fun findOne(k: String, q: String, question: String, used: List<String>, onModel: () -> Unit): Figure? {
-    var cands = runCatching { figures.candidates(q, used, question) }.getOrDefault(emptyList())
+    var cands = runCatching { figures.candidates(q, used) }.getOrDefault(emptyList())
     // Last general fallback: let the model translate an unknown Bengali topic for the image search.
     if (cands.isEmpty() && q.any { it in '\u0980'..'\u09FF' }) {
       onModel()
@@ -681,7 +658,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         gemma.oneShot("Translate this study topic to English for a picture search. Reply with 1-4 English words only: $q", 40)
       }.getOrDefault("").trim().removeSurrounding("\"").trim()
       if (en.isNotBlank() && en.none { it in '\u0980'..'\u09FF' }) {
-        cands = runCatching { figures.candidates(en, used, question) }.getOrDefault(emptyList())
+        cands = runCatching { figures.candidates(en, used) }.getOrDefault(emptyList())
       }
     }
     if (cands.isEmpty()) { figStates[k] = FigState.None("No free picture found for this.", retry = true); return null }
@@ -938,11 +915,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       "Answer my question now using those results and what you know. Never say you have no " +
         "information: if the results are thin, say what you found and give your best answer."
 
-    /**
-     * Prompt for answers read from a picture. Only the subject's own rules are added, so a physics
-     * or economics page never receives chemistry facts.
-     */
-    internal fun ocrRule(subject: Subject): String = buildString {
+    /** Prompt for answers read from a picture; generic, so the model owns the subject. */
+    internal fun ocrRule(): String = buildString {
       append("[The text below was read from my picture by on-device OCR and may contain mistakes. ")
       append("First silently repair obvious OCR errors using the subject and context: a Latin-looking ")
       append("fragment inside a Bengali sentence is usually a misread Bengali word; a garbled word ")
@@ -951,71 +925,24 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("and lettered questions (ক), (খ), (গ), (ঘ), the numbered lines are the stimulus: answer the ")
       append("lettered questions only, not the equations. If my question asks for only one part (for ")
       append("example only (ক)), answer only that part. Otherwise answer every visible part separately in ")
-      append("Bengali, 2-4 sentences each, with precise textbook definitions. Write only Bengali words ")
+      append("Bengali, 2-4 sentences each, with precise textbook definitions. For an explanatory ")
+      append("answer, add one line exactly like [FIGURE: 2-5 English search words] where a picture would ")
+      append("help; the picture search uses English. Write only Bengali words ")
       append("(English technical names in brackets are fine); never use words from other languages. ")
-      when (subject) {
-        Subject.CHEMISTRY -> append(
-          "Known slips in Bengali chemistry text: 'সমাণুকরণ' is usually 'সংযোজন', 'Be' is 'যুক্তি', " +
-            "'ey' is 'এসিড'. On this page 'পেন্রোলিয়াম' is 'পেট্রোলিয়াম', '0০02' is 'CO₂', " +
-            "'CuCle' is 'CuCl₂', 'ZnClo' is 'ZnCl₂', 'On1'/'0n1' is '₀n¹' (a neutron); write " +
-            "²³⁸U + ₀n¹ → ₅₆Ba + ₃₆Kr + 3 ₀n¹, not 0n1/3011. 'BHI' is 'কী?'. " +
-            "The first lettered question is about electroplating (ইলেকট্রোপ্লেটিং/তড়িৎ প্রলেপন), " +
-            "not electrolysis. A '>' between reactants and products is the " +
-            "arrow →; write →, not >. Write each chemical equation on its own line inside \$\$...\$\$ " +
-            "using \\rightarrow (or \\rightleftharpoons) and subscripts, like " +
-            "\$\$\\mathrm{CH_4} + 2\\mathrm{O_2} \\rightarrow \\mathrm{CO_2} + 2\\mathrm{H_2O}\$\$. " +
-            "Never write the word 'arrow'; use the symbol. "
-        )
-        Subject.PHYSICS -> append(
-          "Write formulas with standard symbols and units, each on its own line inside \$\$...\$\$. "
-        )
-        Subject.ECONOMICS, Subject.GENERAL -> {}
-      }
       append("Do not write an essay; do not say that no picture was attached.]")
     }
 
-    /** After an OCR answer: a generic correctness pass plus rules for the detected subject only. */
-    internal fun reviewRule(subject: Subject): String = buildString {
+    /** After an OCR answer: a generic correctness pass. */
+    internal fun reviewRule(): String = buildString {
       append("Rewrite your previous answer, correcting any factual mistake. Do not comment on this ")
       append("request or mention that you are checking; output only the corrected answer. Keep every ")
       append("part the user asked for: if the previous answer covered every part, the corrected answer ")
       append("must cover all of them and never drop one. If my question asked for only one part, keep ")
       append("only that part and do not add the others. Check the answer against the passage: ")
       append("definitions, examples, equations, units and numbers. An example must not contradict the ")
-      append("definition. Do not invent names, data or formulas. Write only Bengali words, never words ")
-      append("from other languages, and use the subject's standard notation. Keep each part to 2-4 ")
-      append("sentences, in Bengali. ")
-      when (subject) {
-        Subject.CHEMISTRY -> append(
-          "For chemistry: a one-way reaction proceeds in only one direction; equilibrium is dynamic " +
-            "with equal forward and reverse rates and concentrations that stay constant (not " +
-            "necessarily equal). Use a truly one-way example such as CaCO₃ → CaO + CO₂ in an open " +
-            "vessel or Zn + H₂SO₄ → ZnSO₄ + H₂; ammonia synthesis is reversible. Burning natural gas " +
-            "is simply দহন বিক্রিয়া, an exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O). " +
-            "Incomplete combustion leaves soot/carbon and CO, so a black deposit means wasted fuel, " +
-            "not complete combustion. Reaction names must match the equations. Use → in equations, " +
-            "never the word 'arrow'. On a stimulus page, answer the lettered questions (ক)-(ঘ), not " +
-            "the numbered equations. Petroleum burning in O₂ to CO₂ + H₂O is combustion, not " +
-            "photosynthesis. A uranium nucleus hit by a neutron and splitting into Ba + Kr + 3 " +
-            "neutrons is nuclear fission, not a chemical reaction; write it as " +
-            "²³⁸U + ₀n¹ → ₅₆Ba + ₃₆Kr + 3 ₀n¹ + শক্তি (the incoming particle is ₀n¹, a neutron). " +
-            "Zn + CuCl₂ → ZnCl₂ + Cu is a single displacement redox reaction, not double displacement. Electroplating " +
-            "(ইলেকট্রোপ্লেটিং/তড়িৎ প্রলেপন) is coating an object with a thin layer of another metal " +
-            "by electrolysis: the object is the cathode, the plating metal is the anode, and the " +
-            "electrolyte contains the plating metal's ions; do not answer electrolysis. A salt bridge " +
-            "completes the circuit and keeps the charge balance; it does not let the two solutions mix."
-        )
-        Subject.PHYSICS -> append(
-          "For physics: check that units match on both sides of every formula, that directions and " +
-            "signs are correct, and that the law is applied to the right situation. Do not mix scalar " +
-            "and vector quantities."
-        )
-        Subject.ECONOMICS -> append(
-          "For economics: check that definitions, assumptions and cause-effect direction are correct; " +
-            "do not invent data, dates or figures."
-        )
-        Subject.GENERAL -> {}
-      }
+      append("definition. Do not invent names, data or formulas. Keep any [FIGURE: ...] marker and ")
+      append("write its search words in English. Write only Bengali words, never words ")
+      append("from other languages. Keep each part to 2-4 sentences, in Bengali. ")
     }
 
     /** When the phone has no internet: answer anyway, but say it may be old. */
@@ -1052,44 +979,3 @@ internal fun keepBengali(text: String): String =
       )
   }
 
-/** Which textbook subject a picture belongs to; controls which review hints are allowed. */
-internal enum class Subject { GENERAL, CHEMISTRY, PHYSICS, ECONOMICS }
-
-private val CHEM_WORDS = listOf(
-  "রাসায়নিক", "বিক্রিয়া", "সমীকরণ", "জারণ", "বিজারণ", "যৌগ", "পরমাণু", "অম্ল", "ক্ষার",
-  "লবণ", "প্রশমন", "সংযোজন", "বিয়োজন", "সালফার", "নাইট্রো", "হাইড্রো", "কার্বন", "অক্সিজেন",
-  "মিথেন", "দহন", "nacl", "h2so4", "caco3", "chemistry",
-)
-private val PHYSICS_WORDS = listOf(
-  "বেগ", "ত্বরণ", "ঘর্ষণ", "শক্তি", "ক্ষমতা", "চাপ", "তাপমাত্রা", "বিদ্যুৎ", "চুম্বক",
-  "তরঙ্গ", "শব্দ", "নিউটন", "মহাকর্ষ", "কৌণিক", "velocity", "acceleration", "force",
-  "energy", "newton", "physics",
-)
-private val ECONOMICS_WORDS = listOf(
-  "অর্থনীতি", "চাহিদা", "যোগান", "বাজার", "মূল্য", "মুদ্রা", "ব্যাংক", "বাজেট", "উৎপাদন",
-  "ভোগ", "সঞ্চয়", "বিনিয়োগ", "মুদ্রাস্ফীতি", "জিডিপি", "demand", "supply", "inflation",
-  "gdp", "economics",
-)
-
-/**
- * Two clear subject words are enough; anything weaker stays GENERAL, which receives the plain
- * review with no subject facts. This is what stops chemistry hints leaking into other subjects.
- */
-internal fun subjectOf(text: String): Subject {
-  // Bengali "য়"/"ড়" can be one codepoint or a letter plus a combining mark; NFC + \p{M} makes
-  // both spellings match the word lists.
-  fun norm(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC)
-  val t = norm(text.lowercase())
-  val tokens = t.split(Regex("[^\\p{L}\\p{M}\\p{N}]+")).filter { it.isNotBlank() }
-  fun hits(words: List<String>): Int = words.count { w ->
-    val nw = norm(w)
-    if (nw.any { it.code < 128 }) t.contains(nw) else tokens.any { it == nw || it.startsWith(nw) }
-  }
-  val scores = mapOf(
-    Subject.CHEMISTRY to hits(CHEM_WORDS),
-    Subject.PHYSICS to hits(PHYSICS_WORDS),
-    Subject.ECONOMICS to hits(ECONOMICS_WORDS),
-  )
-  val best = scores.maxByOrNull { it.value }!!
-  return if (best.value >= 2) best.key else Subject.GENERAL
-}

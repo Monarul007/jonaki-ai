@@ -16,40 +16,12 @@ class FiguresTest {
     assertTrue(Markdown.parse(text).none { it is Markdown.Block.Item && it.text.isBlank() })
   }
 
-  @Test fun topicWordsDropFiller() {
-    assertEquals("photosynthesis", Tutor.topicQuery("How does photosynthesis work?"))
-    assertEquals("we have seasons on Earth", Tutor.topicQuery("Why do we have seasons on Earth?"))
-  }
-
-  @Test fun lessonWithoutPictureGetsOneAfterFirstParagraph() {
-    val out = "Photosynthesis is how plants make food.\n\n" + "More text. ".repeat(60)
-    val withFig = Tutor.ensureFigure(out, "How does photosynthesis work?")
-    assertTrue(withFig.contains("Photosynthesis is how plants make food.\n\n[FIGURE: photosynthesis diagram]\n"))
-  }
-
-  @Test fun noBackupPictureForButtonsShortRepliesOrDemos() {
-    val long = "x ".repeat(400)
-    assertEquals(long, Tutor.ensureFigure(long, null)) // a tutor button or quiz
-    assertEquals("short", Tutor.ensureFigure("short", "How does photosynthesis work?"))
-    val demo = "```html\n<canvas></canvas>\n```\n" + long
-    assertEquals(demo, Tutor.ensureFigure(demo, "Explain gravity"))
-    assertEquals(long, Tutor.ensureFigure(long, "Tell me a joke"))
-  }
-
   @Test fun verdictAndCaption() {
     val (ok, cap) = Figures.parseVerdict("**YES**\nCaption: The diagram shows a chloroplast.\nGreen parts are thylakoids.")
     assertEquals(true, ok)
     assertEquals("The diagram shows a chloroplast. Green parts are thylakoids.", cap)
     assertEquals(false, Figures.parseVerdict("NO - it is a logo").first)
     assertNull(Figures.parseVerdict("Maybe").first)
-  }
-
-  @Test fun searchWordsAreShortAndOnTopic() {
-    assertEquals(
-      "seasons Earth Solar geometry angles sunlight hitting",
-      Figures.searchWords("Solar geometry showing different angles of sunlight hitting the Earth", "Why do we have seasons on Earth?"),
-    )
-    assertEquals("photosynthesis diagram", Figures.searchWords("photosynthesis diagram", "How does photosynthesis work?"))
   }
 
   @Test fun readAloudSkipsMarkers() {
