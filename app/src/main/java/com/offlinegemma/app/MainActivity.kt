@@ -84,6 +84,21 @@ class MainActivity : ComponentActivity() {
     if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0 || intent == null) return
     val app = application as App
     intent.getStringExtra("test_demo")?.let { app.chat.injectTest(it) }
+    // Perfect-reading test: `--es ocr_override /sdcard/Download/page.txt` (empty value = off).
+    intent.getStringExtra("ocr_override")?.let { src ->
+      Ocr.overrideText = if (src.isBlank()) null else runCatching { java.io.File(src).readText() }
+        .onFailure { android.util.Log.w("Ocr", "ocr_override: cannot read $src", it) }.getOrNull()
+      android.util.Log.i("Ocr", "ocr_override set: ${Ocr.overrideText?.length ?: 0} chars")
+    }
+    // OCR only, no model: `--es ocr_test /sdcard/Pictures/page.png` (copied in, then read; see logcat Ocr).
+    intent.getStringExtra("ocr_test")?.let { src ->
+      lifecycleScope.launch {
+        val copy = java.io.File(cacheDir, "ocr_test.png")
+        runCatching { java.io.File(src).copyTo(copy, overwrite = true) }
+          .onFailure { android.util.Log.w("Ocr", "ocr_test: cannot read $src", it) }
+        android.util.Log.i("Ocr", "ocr_test result:\n" + Ocr.readText(this@MainActivity, copy.path))
+      }
+    }
     intent.getStringExtra("go")?.let { runCatching { screenState.value = Screen.valueOf(it.uppercase()) } }
     intent.getStringExtra("theme")?.let { runCatching { app.prefs.theme = ThemeChoice.valueOf(it.uppercase()) } }
     if (intent.hasExtra("onboarded")) app.prefs.onboarded = intent.getBooleanExtra("onboarded", true)

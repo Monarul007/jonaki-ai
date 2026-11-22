@@ -335,12 +335,25 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
         }
 
+        val found = sources.toMutableList()
+        // A photographed page is a study question the small model often gets confidently wrong,
+        // and it rarely chooses to search by itself. So the app always looks it up first. The
+        // trigger is the modality (a page read by OCR), not any word in it; the model writes the query.
+        val research = if (ocrText.isNotBlank() && prefs.webSearch && Tools.online(app)) {
+          researchPage(answerId, ocrText, modelText, topic ?: display, found)
+        } else ""
+
         val skippedAudio = attachments.count { it.kind == Attachment.Kind.AUDIO } - audio.size
         val text = buildString {
           append(modelText)
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
             append(ocrText)
+            if (research.isNotBlank()) {
+              append("\n\n[Web results for checking the facts. Where they disagree with your memory, ")
+              append("trust them. Name the source you used.]\n")
+              append(research)
+            }
             // The user's instruction is the only scope; keep it last, after the page text.
             append("\n\n[Now follow my instruction, and only it: \"")
             append(modelText.take(300))
@@ -359,7 +372,6 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         compactIfNeeded(text.length + images.size * IMAGE_TOKENS * CHARS_PER_TOKEN + audio.sumOf { it.size } / 32000 * AUDIO_TOKENS_PER_SEC * CHARS_PER_TOKEN)
         val start = System.currentTimeMillis()
         onAnswerStart?.invoke(answerId, voice)
-        val found = sources.toMutableList()
         // The agent loop (agent.py agent_chat): answer, or call a tool, read its result, and try again.
         var prompt = if (agent) "(${Tools.PROMPT})\n\n$text" else text
         if (offline) {
@@ -445,7 +457,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // Swap in a buffered review/verification rewrite only when it is complete.
           if (rewriting) {
             rewriting = false
-            if (out.isNotBlank()) {
+            // Length invariant, not wording: a rewrite far shorter than the answer it replaces is a
+            // comment ("please specify…"), not a corrected answer. Keep the answer on screen.
+            val current = lines.getOrNull(indexOf(answerId))?.text.orEmpty()
+            if (out.isNotBlank() && out.length * 3 < current.length) {
+              Log.i("ChatController", "rewrite rejected: ${out.length} chars vs ${current.length}")
+              out = current
+            } else if (out.isNotBlank()) {
               onAnswerStart?.invoke(answerId, voice)
               val safe = if (bengaliAnswer) keepBengali(out) else out
               update(answerId) { it.copy(text = safe) }
@@ -490,7 +508,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             val prev = out.take(2500)
             gemma.startChat(emptyList(), "")
             resetChat = true
-            prompt = "Page text:\n${ocrText.take(1500)}\n\nYour previous answer:\n$prev\n\n" + reviewRule()
+            prompt = "Page text:\n${ocrText.take(if (research.isNotBlank()) 1200 else 1500)}\n\n" +
+              (if (research.isNotBlank()) "Web results:\n${research.take(1500)}\n\n" else "") +
+              "Your previous answer:\n$prev\n\n" + reviewRule(research.isNotBlank())
             if (agent) prompt = "(${Tools.PROMPT})\n\n$prompt"
             continue
           }
@@ -764,6 +784,46 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     startFigures(answerId, q, only = n)
   }
 
+  /**
+   * App-run research for a photographed page: the model writes one search query for exactly what
+   * the user asked, the app searches and reads the top result. Returns the evidence text ("" when
+   * nothing usable came back). Shown as tool chips like any other tool call.
+   */
+  private suspend fun researchPage(
+    answerId: Long, page: String, ask: String, question: String, found: MutableList<Source>,
+  ): String {
+    status = "Planning what to look up…"
+    val raw = runCatching {
+      gemma.oneShot(
+        "Page text:\n${page.take(1200)}\n\nMy instruction: ${ask.take(300)}\n\n" +
+          "Write one short English web search query (3 to 8 words) that finds the facts needed to " +
+          "answer exactly what my instruction asks. Reply with the query only.",
+        30,
+      )
+    }.getOrDefault("")
+    // oneShot closed the chat; reopen it without the turn being answered now.
+    gemma.startChat(history(lines.dropLast(2)))
+    val query = raw.lineSequence().map { it.trim().trim('"', '`', '*', '\'').trim() }
+      .firstOrNull { it.isNotBlank() }.orEmpty().take(120)
+    Log.i("ChatController", "page research query='$query'")
+    status = null
+    if (query.isBlank()) return ""
+    val before = found.size
+    val results = runTool(answerId, Tools.Call("web_search", mapOf("query" to query)), question, found)
+    if (results.isBlank() || results.startsWith("Error") || results.startsWith("No results")) return ""
+    // The first result of THIS search (found may already hold sources from earlier).
+    val top = found.drop(before).firstOrNull { it.url.startsWith("http") }
+    val pageText = top?.let {
+      runTool(answerId, Tools.Call("web_fetch", mapOf("url" to it.url, "query" to query)), question, found)
+    }.orEmpty()
+    val usablePage = pageText.isNotBlank() && !pageText.startsWith("Error") &&
+      !pageText.startsWith("The page came back almost empty")
+    return buildString {
+      append("Tool result for web_search:\n").append(results.take(1000))
+      if (usablePage) append("\n\nTool result for web_fetch (${top?.url}):\n").append(pageText.take(1400))
+    }
+  }
+
   /** Runs one tool call and shows it as a chip (green = worked, red = failed). */
   private suspend fun runTool(answerId: Long, c: Tools.Call, question: String, found: MutableList<Source>): String {
     val detail = when (c.name) {
@@ -993,7 +1053,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("beside a known term is that term; broken formulas should be rebuilt from the surrounding ")
       append("names. Do not repeat garbled text. If the page has numbered statements (i), (ii), (iii) ")
       append("and lettered questions (ক), (খ), (গ), (ঘ), the numbered lines are the stimulus: answer the ")
-      append("lettered questions only, not the equations. If my question asks for only one part (for ")
+      append("lettered questions only, not the equations. The app numbered the page's formula lines in ")
+      append("order as [Formula line 1], [Formula line 2], …, because OCR misreads the printed (i), (ii), ")
+      append("(iii). When a question names a statement ('the second reaction', '(ii)'), it means the ")
+      append("[Formula line] with that number: (i) or first = 1, (ii) or second = 2, (iii) or third = 3. ")
+      append("If my question asks for only one part (for ")
       append("example only (ক)), answer only that part. Otherwise answer every visible part separately in ")
       append("Bengali, 2-4 sentences each, with precise textbook definitions. Write equations with real ")
       append("symbols (→, subscripts) and name every product; never write the word 'products' inside ")
@@ -1005,7 +1069,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     }
 
     /** After an OCR answer: a generic correctness pass. */
-    internal fun reviewRule(): String = buildString {
+    internal fun reviewRule(withWeb: Boolean = false): String = buildString {
+      if (withWeb) {
+        append("Check every fact and equation in your previous answer against the web results above. ")
+        append("Where they disagree, the web results win. Name the source you used. ")
+      }
       append("Rewrite your previous answer, correcting any factual mistake. Do not comment on this ")
       append("request or mention that you are checking; output only the corrected answer. Keep every ")
       append("part the user asked for: if the previous answer covered every part, the corrected answer ")

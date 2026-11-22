@@ -100,6 +100,9 @@ dependencies {
     // On-device OCR (Bengali + English) for pictures when the model's vision is not loaded.
     // ML Kit and PaddleOCR do not support the Bengali script, so Tesseract is used here.
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
+    // Latin text (chemical formulas, equations) read by ML Kit's bundled, offline Latin model;
+    // Tesseract misreads Latin formulas on a Bengali page ("CuCl2" -> "00002").
+    implementation("com.google.mlkit:text-recognition:16.0.1")
 
     testImplementation("junit:junit:4.13.2")
     // Real org.json for JVM tests (Android's copy is only a stub there).
