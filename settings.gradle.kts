@@ -10,6 +10,8 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Tesseract4Android (Bengali OCR fallback) is published on JitPack.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 rootProject.name = "OfflineGemma"

@@ -34,6 +34,15 @@ class MainActivity : ComponentActivity() {
     if (ok) beginTalk() else (application as App).chat.notice("🎙️ Talk mode needs the microphone. You can allow it in the phone's Settings.")
   }
 
+  /** A picture shared into the app waits here while the photo permission is requested. */
+  private var pendingShare: List<android.net.Uri> = emptyList()
+  private val sharePermission = registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { ok ->
+    val uris = pendingShare
+    pendingShare = emptyList()
+    if (ok) uris.forEach { (application as App).chat.addImage(it) }
+    else if (uris.isNotEmpty()) (application as App).chat.notice("Allow photo access to share pictures, or use the + button.")
+  }
+
   private fun startTalk() {
     if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED) beginTalk()
     else micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
@@ -108,20 +117,41 @@ class MainActivity : ComponentActivity() {
   /** Something shared into the app from another app: pictures and files are attached, text goes in the box. */
   private fun handleShare(intent: android.content.Intent?) {
     val chat = (application as App).chat
+    val isImage = intent?.type?.startsWith("image/") == true
     when (intent?.action) {
       android.content.Intent.ACTION_SEND -> {
         val uri = androidx.core.content.IntentCompat.getParcelableExtra(intent, android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java)
-        if (uri != null) chat.addFile(uri)
+        if (uri != null) {
+          // Route by the intent's own type: without photo access getType(uri) can be null,
+          // which previously sent a shared picture down the document path and failed.
+          if (isImage) shareImages(listOf(uri)) else chat.addFile(uri)
+        }
         intent.getStringExtra(android.content.Intent.EXTRA_TEXT)?.let { chat.sharedText = it }
       }
       android.content.Intent.ACTION_SEND_MULTIPLE -> {
-        androidx.core.content.IntentCompat.getParcelableArrayListExtra(intent, android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java)
-          ?.forEach { chat.addFile(it) }
+        val uris = androidx.core.content.IntentCompat.getParcelableArrayListExtra(
+          intent, android.content.Intent.EXTRA_STREAM, android.net.Uri::class.java,
+        ) ?: emptyList()
+        if (isImage) shareImages(uris) else uris.forEach { chat.addFile(it) }
       }
       else -> return
     }
     intent.action = null
     screenState.value = if (ModelInfo.isDownloaded(this)) Screen.CHAT else Screen.SETUP
+  }
+
+  /** Pictures shared from another app need photo access on Android 13+ before we can read them. */
+  private fun shareImages(uris: List<android.net.Uri>) {
+    if (uris.isEmpty()) return
+    val permission =
+      if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_IMAGES
+      else android.Manifest.permission.READ_EXTERNAL_STORAGE
+    if (checkSelfPermission(permission) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      uris.forEach { (application as App).chat.addImage(it) }
+    } else {
+      pendingShare = uris
+      sharePermission.launch(permission)
+    }
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {

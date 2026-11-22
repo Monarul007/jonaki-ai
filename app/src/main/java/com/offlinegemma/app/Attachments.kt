@@ -24,6 +24,8 @@ object Attachments {
   const val DOC_CHARS = 5000
   /** Gemma looks at pictures at a small size; bigger ones only cost memory. */
   private const val MAX_SIDE = 1024
+  /** A sharper copy for OCR only: small letters on a textbook page need the extra pixels. */
+  private const val OCR_MAX_SIDE = 2400
 
   val DOC_MIME_TYPES = arrayOf(
     "application/pdf",
@@ -46,21 +48,49 @@ object Attachments {
       }
     }.getOrNull() ?: uri.lastPathSegment?.substringAfterLast('/') ?: "file"
 
-  /** Copies any picture into the chat's folder as a small JPEG. */
+  /** Copies any picture into the chat's folder as a small JPEG (plus a sharper OCR copy). */
   suspend fun importImage(context: Context, uri: Uri, dir: File, name: String = displayName(context, uri)): Attachment =
     withContext(Dispatchers.IO) {
-      saveSource(ImageDecoder.createSource(context.contentResolver, uri), dir, name)
+      importFromSource(ImageDecoder.createSource(context.contentResolver, uri), dir, name)
     }
 
-  private fun saveSource(src: ImageDecoder.Source, dir: File, name: String): Attachment {
-    val bmp = ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+  /**
+   * Decodes once at the larger OCR size, then saves the small copy the model uses and, when the
+   * photo was bigger than that copy, a sharper one for OCR. This is what makes small textbook
+   * text readable: the 1024 px chat copy loses it, the 2400 px copy keeps it.
+   */
+  private fun importFromSource(src: ImageDecoder.Source, dir: File, name: String): Attachment {
+    val big = ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
       decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
       val w = info.size.width
       val h = info.size.height
-      val scale = minOf(1f, MAX_SIDE.toFloat() / maxOf(w, h))
+      val scale = minOf(1f, OCR_MAX_SIDE.toFloat() / maxOf(w, h))
       if (scale < 1f) decoder.setTargetSize((w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
     }
-    return saveBitmap(bmp, dir, name)
+    val longest = maxOf(big.width, big.height)
+    if (longest <= MAX_SIDE) {
+      val only = writeJpeg(big, dir, name, 90)
+      big.recycle()
+      return only
+    }
+    val s = MAX_SIDE.toFloat() / longest
+    val small = Bitmap.createScaledBitmap(
+      big,
+      (big.width * s).toInt().coerceAtLeast(1),
+      (big.height * s).toInt().coerceAtLeast(1),
+      true,
+    )
+    val vision = writeJpeg(small, dir, name, 88)
+    val sharp = writeJpeg(big, dir, name + "_ocr", 92)
+    small.recycle()
+    big.recycle()
+    return vision.copy(ocrPath = sharp.path)
+  }
+
+  private fun writeJpeg(bmp: Bitmap, dir: File, name: String, quality: Int): Attachment {
+    val out = File(dir, "img_${UUID.randomUUID().toString().take(8)}.jpg")
+    out.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, quality, it) }
+    return Attachment(Attachment.Kind.IMAGE, name, out.path)
   }
 
   fun saveBitmap(bmp: Bitmap, dir: File, name: String): Attachment {

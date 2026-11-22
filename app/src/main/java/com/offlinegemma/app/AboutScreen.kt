@@ -31,6 +31,8 @@ private data class Notice(val name: String, val what: String, val license: Strin
 private val NOTICES = listOf(
   Notice("Gemma 4 E2B", "The AI model (Google DeepMind), LiteRT-LM build from litert-community on Hugging Face.", "Apache License 2.0", "https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm"),
   Notice("LiteRT-LM", "Runs the model on the phone (Google AI Edge).", "Apache License 2.0", "https://github.com/google-ai-edge/LiteRT-LM"),
+  Notice("Tesseract OCR", "Reads the text in pictures on the phone (Bengali and English).", "Apache License 2.0", "https://github.com/tesseract-ocr/tesseract"),
+  Notice("Tesseract language data", "Bengali and English trained data for the picture reader.", "Apache License 2.0", "https://github.com/tesseract-ocr/tessdata_best"),
   Notice("Google AI Edge Gallery", "Ideas for loading the model and the GPU → CPU fallback order.", "Apache License 2.0", "https://github.com/google-ai-edge/gallery"),
   Notice("Android Jetpack (Compose, Material 3, WorkManager, Splash Screen)", "Screens, design and the background download.", "Apache License 2.0", "https://developer.android.com/jetpack"),
   Notice("Material Symbols icons", "Icons.", "Apache License 2.0", "https://fonts.google.com/icons"),

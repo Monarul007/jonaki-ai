@@ -97,6 +97,9 @@ dependencies {
     implementation("androidx.camera:camera-view:1.4.2")
     // Reads the text inside PDFs, on the phone (Apache 2.0).
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // On-device OCR (Bengali + English) for pictures when the model's vision is not loaded.
+    // ML Kit and PaddleOCR do not support the Bengali script, so Tesseract is used here.
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
 
     testImplementation("junit:junit:4.13.2")
     // Real org.json for JVM tests (Android's copy is only a stub there).

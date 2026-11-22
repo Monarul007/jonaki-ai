@@ -165,6 +165,8 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     systemInstruction = Contents.of(system),
     initialMessages = history,
     samplerConfig = SAMPLER,
+    // Explicit ceiling: the default was cutting long Bengali answers short mid-sentence.
+    maxOutputToken = 2048,
   )
 
   companion object {

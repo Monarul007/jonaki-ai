@@ -66,6 +66,7 @@ import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -304,6 +305,7 @@ fun ToolChips(tools: List<ToolUse>) {
 private fun toolLabel(t: ToolUse) = when (t.name) {
   "web_search" -> "Searched: ${t.detail}"
   "web_fetch" -> "Read: ${t.detail.removePrefix("https://").removePrefix("www.")}"
+  "ocr" -> if (t.ok == false) "Couldn't read the picture" else "Read the picture"
   "run_js" -> if (t.ok == false) "Code test failed" else "Ran code"
   "run_python" -> if (t.ok == false) "Python failed" else "Ran Python"
   "read_document" -> "Read: ${t.detail}"
@@ -364,6 +366,7 @@ private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () 
       }
       is Markdown.Block.Code -> CodeBlock(b.lang, b.body)
       is Markdown.Block.Math -> MathBlock(b.tex, colors)
+      is Markdown.Block.Chem -> ChemBlock(b.text, colors)
       is Markdown.Block.Table -> TableBlock(b, colors)
       Markdown.Block.Rule -> androidx.compose.material3.HorizontalDivider(color = scheme.outlineVariant)
       is Markdown.Block.Figure -> {
@@ -457,12 +460,44 @@ private fun CodeBlock(lang: String, code: String) {
 
 @Composable
 private fun MathBlock(tex: String, colors: Markdown.InlineColors) {
-  Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+  Surface(
+    shape = MaterialTheme.shapes.medium,
+    color = MaterialTheme.colorScheme.surfaceContainerLow,
+    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+    modifier = Modifier.fillMaxWidth(),
+  ) {
     Text(
       Markdown.inline("$$" + tex + "$$", colors),
-      Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 12.dp),
-      style = MaterialTheme.typography.bodyLarge.copy(fontSize = 18.sp),
+      Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 14.dp),
+      textAlign = TextAlign.Center,
+      style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Serif, fontSize = 20.sp, lineHeight = 28.sp),
     )
+  }
+}
+
+/** A reaction on its own card: real arrows, real subscripts, a quiet colour accent. */
+@Composable
+private fun ChemBlock(raw: String, colors: Markdown.InlineColors) {
+  val scheme = MaterialTheme.colorScheme
+  Surface(
+    shape = MaterialTheme.shapes.medium,
+    color = scheme.surfaceContainerLow,
+    border = androidx.compose.foundation.BorderStroke(1.dp, scheme.outlineVariant),
+    modifier = Modifier.fillMaxWidth(),
+  ) {
+    Row(
+      Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Box(Modifier.width(3.dp).height(30.dp).background(scheme.primary, RoundedCornerShape(2.dp)))
+      Spacer(Modifier.width(12.dp))
+      Text(
+        Markdown.inline(Markdown.chem(raw), colors),
+        modifier = Modifier.weight(1f),
+        textAlign = TextAlign.Center,
+        style = MaterialTheme.typography.bodyLarge.copy(fontFamily = FontFamily.Serif, fontSize = 20.sp, lineHeight = 30.sp),
+      )
+    }
   }
 }
 
