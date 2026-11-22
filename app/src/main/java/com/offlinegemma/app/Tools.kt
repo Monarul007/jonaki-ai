@@ -90,6 +90,22 @@ object Tools {
     RegexOption.IGNORE_CASE,
   )
 
+  /** Low-confidence wording, English and Bengali: look it up and attach a figure. */
+  val UNSURE_RX = Regex(
+    """i'?m not sure|i am not sure|not (entirely |completely )?certain|i (really )?(don'?t|do not) know|""" +
+      """no reliable information|i cannot verify|i can'?t verify|""" +
+      """my knowledge (may be|is) (outdated|limited)|""" +
+      """জানি না|জানা নেই|নিশ্চিত নই|নিশ্চিত না|তথ্য নেই|সঠিক তথ্য নেই|""" +
+      """যথেষ্ট তথ্য নেই|পর্যাপ্ত তথ্য নেই|উত্তর দিতে পারব না|বলতে পারব না|বলতে পারছি না""",
+    RegexOption.IGNORE_CASE,
+  )
+
+  /** True when the answer admits it is not confident (refusal or "I'm not sure"). */
+  fun isUnsure(text: String): Boolean {
+    val head = text.take(600)
+    return REFUSAL_RX.containsMatchIn(head) || UNSURE_RX.containsMatchIn(head)
+  }
+
   fun online(context: Context): Boolean {
     val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false

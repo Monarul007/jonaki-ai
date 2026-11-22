@@ -173,6 +173,27 @@ class BengaliTextTest {
   }
 }
 
+class FigureAndConfidenceTest {
+  @Test fun spotsUnsureAnswersInBothLanguages() {
+    assertTrue(Tools.isUnsure("আমি এই প্রশ্নের সঠিক উত্তর জানি না।"))
+    assertTrue(Tools.isUnsure("আমার জানা নেই।"))
+    assertTrue(Tools.isUnsure("I'm not sure about the exact date."))
+    assertTrue(Tools.isUnsure("I don't know the answer."))
+    assertFalse(Tools.isUnsure("মিথেনের দহন বিক্রিয়া হলো CH₄ + 2O₂ → CO₂ + 2H₂O।"))
+  }
+
+  @Test fun unsureAnswerGetsAFigureMarker() {
+    val q = "বস্তুর বেগ ও ত্বরণ নির্ণয় করো"
+    val a = "আমি নিশ্চিত নই, তবে এই বিষয়ে আরও জানতে একটি চিত্র সহায়ক হতে পারে।"
+    val out = Tutor.ensureFigure(a, q, unsure = true)
+    assertTrue(out.contains("[FIGURE:"))
+  }
+
+  @Test fun bengaliTopicQueryDropsQuestionWords() {
+    assertEquals("রাসায়নিক সাম্যাবস্থা", Tutor.topicQuery("রাসায়নিক সাম্যাবস্থা বলতে কী বোঝায়?"))
+  }
+}
+
 class SubjectTest {
   @Test fun recognisesChemistryPhysicsAndEconomics() {
     assertEquals(Subject.CHEMISTRY, subjectOf("রাসায়নিক বিক্রিয়া, জারণ ও বিজারণ"))

@@ -111,13 +111,23 @@ object Tutor {
   private val LESSON_RX = Regex(
     "explain|how does|how do|why does|why do|what is|what are|what happens|physics|chemi|cosmolog|biolog|" +
       "astronom|quantum|black hole|galax|planet|atom|molecul|reaction|gravity|relativity|teach|lesson|" +
-      "diagram|anatomy|cell|volcano|earthquake|photosynth|ecosystem|evolution|electric|magnet",
+      "diagram|anatomy|cell|volcano|earthquake|photosynth|ecosystem|evolution|electric|magnet|" +
+      "ব্যাখ্যা|কীভাবে|কিভাবে|কেন|বলতে কী|প্রক্রিয়া|গঠন|বিশ্লেষণ|পরীক্ষা|চিত্র|সংজ্ঞা|" +
+      "রাসায়নিক|পদার্থ|শক্তি|উদ্ভিদ|প্রাণী|কোষ|গ্রহ|নক্ষত্র|মহাবিশ্ব|ইতিহাস|অর্থনীতি",
     RegexOption.IGNORE_CASE,
   )
 
+  private val BN_STOP = setOf(
+    "ব্যাখ্যা", "কীভাবে", "কিভাবে", "কেন", "কী", "কি", "করো", "কর", "বলো", "বল", "লেখো",
+    "লেখ", "দাও", "একটি", "একটা", "এর", "ও", "এবং", "সম্পর্কে", "বলতে", "বোঝায়", "উত্তর",
+    "প্রশ্ন", "অংশ", "দয়া", "করে", "হয়", "আমাকে", "আমার", "তোমার", "কোন", "কোনটি",
+  )
+  private fun nfc(s: String) = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFC)
+  private val BN_STOP_N = BN_STOP.map(::nfc).toSet()
+
   /** Search words from a question: "How does photosynthesis work?" -> "photosynthesis" (chat.html topicQuery). */
-  fun topicQuery(q: String): String =
-    q.replace(Regex("[?!.,\"“”]"), " ")
+  fun topicQuery(q: String): String {
+    val cleaned = nfc(q).replace(Regex("[?!.,\"“”]"), " ")
       .replace(
         Regex(
           "\\b(please|explain|describe|tell me( about)?|teach me( about)?|show me|how|why|what|does|do|is|are|the|a|an|" +
@@ -126,15 +136,22 @@ object Tutor {
         ),
         " ",
       )
-      .replace(Regex("\\s+"), " ").trim().take(80)
+    val words = cleaned.split(Regex("[\\s,।;:!?()\\[\\]{}]+"))
+      .map(::nfc)
+      .filter { it.isNotBlank() && it !in BN_STOP_N }
+    return words.take(12).joinToString(" ").replace(Regex("\\s+"), " ").trim().take(80)
+  }
 
   /**
    * Lessons that came back without a picture get one, like a textbook page (chat.html ensureFigure).
    * [question] is the user's own typed question (null for tutor buttons, quizzes, fixes).
    */
-  fun ensureFigure(out: String, question: String?): String {
-    if (question == null || FIG_INLINE.containsMatchIn(out)) return out
-    if (!LESSON_RX.containsMatchIn(question) || out.length < 500) return out
+  fun ensureFigure(out: String, question: String?, unsure: Boolean = false): String {
+    if (question == null || out.isBlank() || FIG_INLINE.containsMatchIn(out)) return out
+    val lesson = LESSON_RX.containsMatchIn(question)
+    if (!lesson && !unsure) return out
+    // A confident lesson needs a real explanation before a picture; an unsure answer needs help now.
+    if (!unsure && out.length < 500) return out
     if (Regex("```html", RegexOption.IGNORE_CASE).containsMatchIn(out) || Regex("^\\(.*\\)$").matches(out.trim())) return out
     val q = topicQuery(question)
     if (q.length < 3) return out
