@@ -655,7 +655,17 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   /** One figure: search, download, let Gemma check it (YES/NO + caption), up to 3 tries. */
   private suspend fun findOne(k: String, q: String, question: String, used: List<String>, onModel: () -> Unit): Figure? {
-    val cands = runCatching { figures.candidates(q, used, question) }.getOrDefault(emptyList())
+    var cands = runCatching { figures.candidates(q, used, question) }.getOrDefault(emptyList())
+    // Last general fallback: let the model translate an unknown Bengali topic for the image search.
+    if (cands.isEmpty() && q.any { it in '\u0980'..'\u09FF' }) {
+      onModel()
+      val en = runCatching {
+        gemma.oneShot("Translate this study topic to English for a picture search. Reply with 1-4 English words only: $q", 40)
+      }.getOrDefault("").trim().removeSurrounding("\"").trim()
+      if (en.isNotBlank() && en.none { it in '\u0980'..'\u09FF' }) {
+        cands = runCatching { figures.candidates(en, used, question) }.getOrDefault(emptyList())
+      }
+    }
     if (cands.isEmpty()) { figStates[k] = FigState.None("No free picture found for this.", retry = true); return null }
     var tried = 0
     for (c in cands) {
