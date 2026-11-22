@@ -613,7 +613,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     figStates[k]?.let { return it }
     if (!answer.done) return null // still streaming: "comes when the answer is done"
     val used = (1 until n).mapNotNull { (figStates["${answer.id}|$it"] as? FigState.Done)?.figure?.file }
-    val hit = figures.cached(query, used)
+    val hit = figures.cached(Tutor.englishFigureQuery(query), used)
     // Not stored here: this runs while the screen draws (the screen remembers it).
     return if (hit != null) FigState.Done(hit) else FigState.None("no picture saved yet", retry = true)
   }
@@ -621,7 +621,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** Finds pictures for every figure in an answer (after it finishes). */
   private fun startFigures(answerId: Long, question: String, only: Int? = null) {
     val answer = lines.getOrNull(indexOf(answerId)) ?: return
-    val queries = Tutor.figureQueries(answer.text)
+    val queries = Tutor.figureQueries(answer.text).map { Tutor.englishFigureQuery(it) }
     if (queries.isEmpty()) return
     busy = true
     job = scope.launch {
