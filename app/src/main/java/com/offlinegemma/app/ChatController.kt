@@ -251,8 +251,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // even when agent mode is off (agent.py find_links / ROUTES "web").
     val links = if (text.isNotBlank() && prefs.webSearch) Tools.findLinks(text) else emptyList()
     val wantsWeb = text.isNotBlank() && (links.isNotEmpty() || Tools.wantsWeb(text))
-    var agent = prefs.webSearch && !codeProblem && wantsWeb
-    if (agent && !online) agent = false
+    // Offer the tools whenever agent mode, web search and internet are all on. The model decides
+    // whether to search: a keyword gate here hid the tools from exactly the chemistry/physics
+    // questions that need research, so the model could not choose to look anything up.
+    var agent = prefs.agent && prefs.webSearch && !codeProblem && online
     val offline = text.isNotBlank() && !online
     if (offline && wantsWeb) {
       notice("📴 You're offline — live information (weather, news, prices) isn't available.")
@@ -339,6 +341,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
             append(ocrText)
+            // The user's instruction is the only scope; keep it last, after the page text.
+            append("\n\n[Now follow my instruction, and only it: \"")
+            append(modelText.take(300))
+            append("\". Answer only what it asks. If it asks for one part (for example (খ) or 'kh'), ")
+            append("start with that part and do not answer (ক), (গ) or (ঘ). If a diagram or picture ")
+            append("would clearly help, add one line like [FIGURE: photosynthesis diagram], replacing ")
+            append("the words with this topic's English search words. The page text above is reference only.]")
           } else if (!gemma.canSee && imageAtts.isNotEmpty()) {
             append("\n[This phone could not read the attached picture. Tell me that the picture's text could ")
             append("not be read on this phone; do not say that no picture was attached.]")
@@ -471,11 +480,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           // A page read by OCR can carry mistakes and the small model can slip on basic facts.
           // One review turn fixes definitions and equations before the answer is final.
-          // One-part requests are short and already checked by the verifier; a full review pass
-          // is a second model run and makes them feel stuck on a CPU phone.
-          // A short answer is already the whole answer; a second full model pass doubles the wait
-          // for little gain. Full pages still get the review.
-          if (usedOcr && !reviewed && out.isNotBlank() && out.length > 600) {
+          // A very short answer (<300 chars) is already the whole answer; a second full model
+          // pass doubles the wait for little gain. Longer one-part answers still get the review.
+          if (usedOcr && !reviewed && out.isNotBlank() && out.length > 300) {
             reviewed = true
             rewriting = true
             status = "Checking the answer…"
@@ -484,17 +491,31 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             gemma.startChat(emptyList(), "")
             resetChat = true
             prompt = "Page text:\n${ocrText.take(1500)}\n\nYour previous answer:\n$prev\n\n" + reviewRule()
+            if (agent) prompt = "(${Tools.PROMPT})\n\n$prompt"
             continue
           }
           // Bounded confidence loop: every part answered, no uncertainty, sources present for a
           // web question, and at least one source named. Stops after MAX_RESEARCH_ROUNDS.
-          val check = verifyAnswer(
+          var check = verifyAnswer(
             out,
             found,
-            needsWeb = links.isNotEmpty() || Tools.wantsWeb(topic ?: display),
+            needsWeb = links.isNotEmpty(),
             offline = offline,
             webSearchOn = prefs.webSearch && !sourceSearchTried,
           )
+          // A meta-answer ("please specify…") must not become the final answer.
+          if (check.problem == AnswerProblem.OK && out.length < 120) {
+            resetChat = true
+            status = "Checking the answer…"
+            val answered = runCatching {
+              gemma.oneShot(
+                "The user asked:\n${(topic ?: display).take(400)}\n\nThe answer:\n${out.take(800)}\n\n" +
+                  "Does this answer answer exactly what was asked? Reply YES or NO.",
+                6,
+              ).trim().uppercase().startsWith("Y")
+            }.getOrDefault(true)
+            if (!answered) check = AnswerCheck(AnswerProblem.UNSURE)
+          }
           if (check.problem != AnswerProblem.OK && researchRounds < MAX_RESEARCH_ROUNDS) {
             researchRounds++
             turn++
@@ -618,12 +639,35 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** Finds pictures for every figure in an answer (after it finishes). */
   private fun startFigures(answerId: Long, question: String, only: Int? = null) {
     val answer = lines.getOrNull(indexOf(answerId)) ?: return
-    val queries = Tutor.figureQueries(answer.text)
-    if (queries.isEmpty()) return
+    if (answer.text.isBlank() || answer.text.contains("```")) return
     busy = true
     job = scope.launch {
       var usedModel = false
       try {
+        var queries = Tutor.figureQueries(answer.text)
+        if (queries.isEmpty() && answer.text.length > 100) {
+          // Model-driven fallback: one short call decides whether a picture would help.
+          status = "Looking for a picture…"
+          val marker = runCatching {
+            gemma.oneShot(
+              "A student asked: ${question.take(300)}\nThe answer:\n${answer.text.take(1600)}\n\n" +
+                "If one diagram or picture would clearly help this answer, reply with exactly one line " +
+                "like [FIGURE: photosynthesis diagram], replacing the words with this topic's English " +
+                "search words. Otherwise reply NO.",
+              40,
+            )
+          }.getOrDefault("")
+          usedModel = true
+          val tag = Tutor.figureQueries(marker).firstOrNull()
+          if (tag != null) {
+            val withTag = answer.text.trimEnd() + "\n\n[FIGURE: $tag]"
+            update(answerId) { it.copy(text = withTag) }
+            save()
+            queries = listOf(tag)
+          }
+        }
+        if (queries.isEmpty()) return@launch
+        Log.i("Figures", "start id=$answerId queries=$queries")
         val used = mutableListOf<String>()
         for ((i, q) in queries.withIndex()) {
           val n = i + 1
@@ -644,6 +688,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       } finally {
         // The picture checks used the model on their own; give the chat its memory back.
         withContext(kotlinx.coroutines.NonCancellable) { if (usedModel) gemma.startChat(history(lines)) }
+        Log.i("Figures", "finish id=$answerId")
         busy = false
         status = null
       }
@@ -652,6 +697,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   /** One figure: search, download, let Gemma check it (YES/NO + caption), up to 3 tries. */
   private suspend fun findOne(k: String, q: String, question: String, used: List<String>, onModel: () -> Unit): Figure? {
+    val started = System.currentTimeMillis()
+    figStates[k] = FigState.Busy("Searching for a picture of “$q”…")
     var cands = runCatching { figures.candidates(q, used) }.getOrDefault(emptyList())
     // The model sometimes mixes Bengali into the marker; use the English words it supplied.
     if (cands.isEmpty() && q.any { it.code > 127 }) {
@@ -672,26 +719,38 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         cands = runCatching { figures.candidates(en, used) }.getOrDefault(emptyList())
       }
     }
+    Log.i("Figures", "find '$q': ${cands.size} candidates, ${System.currentTimeMillis() - started}ms")
     if (cands.isEmpty()) { figStates[k] = FigState.None("No free picture found for this.", retry = true); return null }
     var tried = 0
     for (c in cands) {
       if (tried >= Figures.MAX_TRIES) break
+      figStates[k] = FigState.Busy("Downloading picture ${tried + 1}…")
+      val td = System.currentTimeMillis()
       val file = runCatching { figures.download(c) }.getOrNull() ?: continue
       tried++
+      Log.i("Figures", "download '${c.file}': ${System.currentTimeMillis() - td}ms")
       var caption = ""
       if (gemma.canSee) {
         figStates[k] = FigState.Busy("Checking picture $tried of up to ${Figures.MAX_TRIES}…")
         onModel()
+        val tv = System.currentTimeMillis()
         val verdict = runCatching {
           Figures.parseVerdict(gemma.oneShot(Figures.checkPrompt(question, q, c), 260, file.readBytes()))
         }.getOrDefault(null to "")
+        Log.i("Figures", "vision check $tried: ${System.currentTimeMillis() - tv}ms")
         if (verdict.first == false) { file.delete(); continue }
         caption = verdict.second
       }
       if (caption.isBlank()) caption = c.desc.ifBlank { c.title } // no caption: the file's own words
-      if (c.file.isNotEmpty() && c.license.isEmpty()) withContext(Dispatchers.IO) { figures.fileLicense(c) }
+      if (c.file.isNotEmpty() && c.license.isEmpty()) {
+        figStates[k] = FigState.Busy("Getting its source…")
+        val tl = System.currentTimeMillis()
+        withContext(Dispatchers.IO) { figures.fileLicense(c) }
+        Log.i("Figures", "licence '${c.file}': ${System.currentTimeMillis() - tl}ms")
+      }
       val f = Figure(q, file.path, caption.take(600), c.title, c.page, c.file, c.license, c.credit, gemma.canSee)
       figures.save(f)
+      Log.i("Figures", "saved '$q' total ${System.currentTimeMillis() - started}ms")
       return f
     }
     figStates[k] = FigState.None("None of the pictures found matched well enough.", retry = true)
@@ -936,9 +995,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("and lettered questions (ক), (খ), (গ), (ঘ), the numbered lines are the stimulus: answer the ")
       append("lettered questions only, not the equations. If my question asks for only one part (for ")
       append("example only (ক)), answer only that part. Otherwise answer every visible part separately in ")
-      append("Bengali, 2-4 sentences each, with precise textbook definitions. For an explanatory ")
-      append("answer, add one line exactly like [FIGURE: 2-5 English search words] where a picture would ")
-      append("help; the picture search uses English. Write only Bengali words ")
+      append("Bengali, 2-4 sentences each, with precise textbook definitions. Write equations with real ")
+      append("symbols (→, subscripts) and name every product; never write the word 'products' inside ")
+      append("an equation. For an explanatory answer, add one line like [FIGURE: photosynthesis diagram] ")
+      append("where a picture would help, replacing those words with this topic's English search words; ")
+      append("the picture search uses English. Write only Bengali words ")
       append("(English technical names in brackets are fine); never use words from other languages. ")
       append("Do not write an essay; do not say that no picture was attached.]")
     }
@@ -951,7 +1012,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("must cover all of them and never drop one. If my question asked for only one part, keep ")
       append("only that part and do not add the others. Check the answer against the passage: ")
       append("definitions, examples, equations, units and numbers. An example must not contradict the ")
-      append("definition. Do not invent names, data or formulas. Keep any [FIGURE: ...] marker and ")
+      append("definition. Check each equation symbol by symbol: every element, subscript, coefficient ")
+      append("and charge must balance on both sides; use the real arrow (→); name every product instead ")
+      append("of writing the word 'products'. If the question asks for a comparison, say which one and ")
+      append("why. Do not invent names, data or formulas. Keep any [FIGURE: ...] marker and ")
       append("write its search words in English. Write only Bengali words, never words ")
       append("from other languages. Keep each part to 2-4 sentences, in Bengali. ")
     }
