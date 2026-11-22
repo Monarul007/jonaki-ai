@@ -101,6 +101,29 @@ class Figures(context: Context) {
 
   private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
 
+  /**
+   * Data-driven translation: search Bengali Wikipedia for the topic, then follow its English
+   * langlink. This works for any topic that has a Bengali article, with no word list.
+   */
+  private fun englishTitle(q: String): String? {
+    val topic = q.replace(Regex("""\bdiagram\b""", RegexOption.IGNORE_CASE), " ").trim()
+    if (topic.isEmpty()) return null
+    val d = getJson(
+      "https://bn.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch=${enc(topic)}" +
+        "&gsrlimit=1&prop=langlinks&lllang=en&lllimit=1",
+    )
+    val pages = d.optJSONObject("query")?.optJSONObject("pages") ?: return null
+    for (k in pages.keys()) {
+      val ll = pages.getJSONObject(k).optJSONArray("langlinks") ?: continue
+      if (ll.length() > 0) {
+        val o = ll.getJSONObject(0)
+        val en = o.optString("*").ifBlank { o.optString("title") }
+        if (en.isNotBlank()) return en
+      }
+    }
+    return null
+  }
+
   private fun wikiCandidates(q: String, n: Int = 3): List<Candidate> {
     val d = getJson(
       "https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch=${enc(q)}" +
@@ -165,9 +188,16 @@ class Figures(context: Context) {
    */
   suspend fun candidates(query: String, exclude: Collection<String>, question: String = ""): List<Candidate> = withContext(Dispatchers.IO) {
     val words = searchWords(query, question)
-    val found = buildList {
-      runCatching { addAll(wikiCandidates(words)) }
-      runCatching { addAll(commonsCandidates(words)) }
+    fun search(w: String) = buildList {
+      runCatching { addAll(wikiCandidates(w)) }
+      runCatching { addAll(commonsCandidates(w)) }
+    }
+    var found = search(words)
+    // A Bengali query against English Wikipedia usually returns nothing. Follow the Bengali
+    // article's English langlink, still with no hardcoded dictionary.
+    if (found.isEmpty() && words.any { it in '\u0980'..'\u09FF' }) {
+      val en = englishTitle(words)
+      if (en != null) found = search(searchWords(en, ""))
     }
     val seen = exclude.toMutableSet()
     found.filter { c ->
