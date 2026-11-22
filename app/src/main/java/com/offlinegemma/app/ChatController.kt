@@ -473,7 +473,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // One review turn fixes definitions and equations before the answer is final.
           // One-part requests are short and already checked by the verifier; a full review pass
           // is a second model run and makes them feel stuck on a CPU phone.
-          if (usedOcr && !reviewed && out.isNotBlank()) {
+          // A short answer is already the whole answer; a second full model pass doubles the wait
+          // for little gain. Full pages still get the review.
+          if (usedOcr && !reviewed && out.isNotBlank() && out.length > 600) {
             reviewed = true
             rewriting = true
             status = "Checking the answer…"
@@ -651,6 +653,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** One figure: search, download, let Gemma check it (YES/NO + caption), up to 3 tries. */
   private suspend fun findOne(k: String, q: String, question: String, used: List<String>, onModel: () -> Unit): Figure? {
     var cands = runCatching { figures.candidates(q, used) }.getOrDefault(emptyList())
+    // The model sometimes mixes Bengali into the marker; use the English words it supplied.
+    if (cands.isEmpty() && q.any { it.code > 127 }) {
+      val ascii = q.filter { it.code < 128 }
+        .replace(Regex("[^A-Za-z0-9 ]"), " ")
+        .replace(Regex("\\s+"), " ").trim()
+      if (ascii.isNotBlank() && ascii != q) {
+        cands = runCatching { figures.candidates(ascii, used) }.getOrDefault(emptyList())
+      }
+    }
     // Last general fallback: let the model translate an unknown Bengali topic for the image search.
     if (cands.isEmpty() && q.any { it in '\u0980'..'\u09FF' }) {
       onModel()
