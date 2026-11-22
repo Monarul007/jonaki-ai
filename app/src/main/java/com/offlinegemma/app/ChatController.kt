@@ -165,7 +165,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   // ---------- sending ----------
 
-  fun canSend() = ready && !busy
+  // Wait for an attachment import too: sending in the middle of a copy used to drop the picture.
+  fun canSend() = ready && !busy && !importing
 
   /** Pictures, voice clips and documents waiting to be sent with the next message. */
   val draft = mutableStateListOf<Attachment>()
@@ -367,6 +368,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var researchRounds = 0
         var sourceSearchTried = false
         var blankRetried = false
+        var rewriting = false
         val usedOcr = ocrText.isNotBlank()
         // A Bengali question must get a Bengali answer; the model sometimes mixes in Tamil/Hindi.
         val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
@@ -376,10 +378,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
             .collect { piece ->
               out += piece
-              val shown = if (agent) Tools.stripCalls(out) else out
-              val safe = if (bengaliAnswer) keepBengali(shown) else shown
-              update(answerId) { it.copy(text = safe) }
-              onAnswerText?.invoke(answerId, safe)
+              // A review/verification rewrite is buffered off-screen; the first answer stays visible.
+              if (!rewriting) {
+                val shown = if (agent) Tools.stripCalls(out) else out
+                val safe = if (bengaliAnswer) keepBengali(shown) else shown
+                update(answerId) { it.copy(text = safe) }
+                onAnswerText?.invoke(answerId, safe)
+              }
             }
           first = false
           if (agent) {
@@ -407,11 +412,23 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               continue
             }
           }
+          // Swap in a buffered review/verification rewrite only when it is complete.
+          if (rewriting) {
+            rewriting = false
+            if (out.isNotBlank()) {
+              onAnswerStart?.invoke(answerId, voice)
+              val safe = if (bengaliAnswer) keepBengali(out) else out
+              update(answerId) { it.copy(text = safe) }
+              onAnswerText?.invoke(answerId, safe)
+            }
+          }
           // Refusal safety net (agent.py REFUSAL_RX): never let "I have no information" be the
           // final word. Throw the refusal away (do not save or speak it), look it up, ask once more.
           // Only throw the answer away when a lookup can actually add evidence. Offline (or with
           // web search off), the honest answer is better than a retry that may come back empty.
-          if (!refused && !offline && prefs.webSearch && out.isNotBlank() && Tools.isUnsure(out)) {
+          if (!refused && researchRounds == 0 && !reviewed && !offline && prefs.webSearch &&
+            out.isNotBlank() && Tools.isUnsure(out)
+          ) {
             refused = true
             researchRounds++
             turn++
@@ -435,8 +452,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // One review turn fixes definitions and equations before the answer is final.
           if (usedOcr && !reviewed && out.isNotBlank()) {
             reviewed = true
-            update(answerId) { it.copy(text = "") }
-            onAnswerStart?.invoke(answerId, voice)
+            rewriting = true
             status = "Checking the answer…"
             prompt = reviewRule(subject)
             continue
@@ -458,8 +474,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           if (check.problem != AnswerProblem.OK && researchRounds < MAX_RESEARCH_ROUNDS) {
             researchRounds++
             turn++
-            update(answerId) { it.copy(text = "") }
-            onAnswerStart?.invoke(answerId, voice)
+            rewriting = true
             status = when (check.problem) {
               AnswerProblem.MISSING_PARTS -> "Checking the answer…"
               AnswerProblem.NOT_CITED -> "Checking sources…"
@@ -866,14 +881,21 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("First silently repair obvious OCR errors using the subject and context: a Latin-looking ")
       append("fragment inside a Bengali sentence is usually a misread Bengali word; a garbled word ")
       append("beside a known term is that term; broken formulas should be rebuilt from the surrounding ")
-      append("names. Do not repeat garbled text. Then answer every visible part separately in Bengali, ")
-      append("2-4 sentences each, with precise textbook definitions. Write only Bengali words (English ")
-      append("technical names in brackets are fine); never use words from other languages. ")
+      append("names. Do not repeat garbled text. If the page has numbered statements (i), (ii), (iii) ")
+      append("and lettered questions (ক), (খ), (গ), (ঘ), the numbered lines are the stimulus: answer the ")
+      append("lettered questions only, not the equations. Then answer every visible part separately in ")
+      append("Bengali, 2-4 sentences each, with precise textbook definitions. Write only Bengali words ")
+      append("(English technical names in brackets are fine); never use words from other languages. ")
       when (subject) {
         Subject.CHEMISTRY -> append(
           "Known slips in Bengali chemistry text: 'সমাণুকরণ' is usually 'সংযোজন', 'Be' is 'যুক্তি', " +
-            "'ey' is 'এসিড'. Write each chemical equation on its own line inside \$\$...\$\$ using " +
-            "\\rightarrow (or \\rightleftharpoons) and subscripts, like " +
+            "'ey' is 'এসিড'. On this page 'পেন্রোলিয়াম' is 'পেট্রোলিয়াম', '0০02' is 'CO₂', " +
+            "'CuCle' is 'CuCl₂', 'ZnClo' is 'ZnCl₂', 'On1'/'0n1' is '₀n¹' (a neutron); write " +
+            "²³⁸U + ₀n¹ → ₅₆Ba + ₃₆Kr + 3 ₀n¹, not 0n1/3011. 'BHI' is 'কী?'. " +
+            "The first lettered question is about electroplating (ইলেকট্রোপ্লেটিং/তড়িৎ প্রলেপন), " +
+            "not electrolysis. A '>' between reactants and products is the " +
+            "arrow →; write →, not >. Write each chemical equation on its own line inside \$\$...\$\$ " +
+            "using \\rightarrow (or \\rightleftharpoons) and subscripts, like " +
             "\$\$\\mathrm{CH_4} + 2\\mathrm{O_2} \\rightarrow \\mathrm{CO_2} + 2\\mathrm{H_2O}\$\$. " +
             "Never write the word 'arrow'; use the symbol. "
         )
@@ -904,7 +926,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             "is simply দহন বিক্রিয়া, an exothermic redox reaction (CH₄ + 2O₂ → CO₂ + 2H₂O). " +
             "Incomplete combustion leaves soot/carbon and CO, so a black deposit means wasted fuel, " +
             "not complete combustion. Reaction names must match the equations. Use → in equations, " +
-            "never the word 'arrow'."
+            "never the word 'arrow'. On a stimulus page, answer the lettered questions (ক)-(ঘ), not " +
+            "the numbered equations. Petroleum burning in O₂ to CO₂ + H₂O is combustion, not " +
+            "photosynthesis. A uranium nucleus hit by a neutron and splitting into Ba + Kr + 3 " +
+            "neutrons is nuclear fission, not a chemical reaction; write it as " +
+            "²³⁸U + ₀n¹ → ₅₆Ba + ₃₆Kr + 3 ₀n¹ + শক্তি (the incoming particle is ₀n¹, a neutron). " +
+            "Zn + CuCl₂ → ZnCl₂ + Cu is a single displacement redox reaction, not double displacement. Electroplating " +
+            "(ইলেকট্রোপ্লেটিং/তড়িৎ প্রলেপন) is coating an object with a thin layer of another metal " +
+            "by electrolysis: the object is the cathode, the plating metal is the anode, and the " +
+            "electrolyte contains the plating metal's ions; do not answer electrolysis. A salt bridge " +
+            "completes the circuit and keeps the charge balance; it does not let the two solutions mix."
         )
         Subject.PHYSICS -> append(
           "For physics: check that units match on both sides of every formula, that directions and " +
