@@ -173,6 +173,24 @@ class BengaliTextTest {
   }
 }
 
+class SubjectTest {
+  @Test fun recognisesChemistryPhysicsAndEconomics() {
+    assertEquals(Subject.CHEMISTRY, subjectOf("রাসায়নিক বিক্রিয়া, জারণ ও বিজারণ"))
+    assertEquals(Subject.PHYSICS, subjectOf("বস্তুর বেগ ও ত্বরণ নির্ণয় করো"))
+    assertEquals(Subject.ECONOMICS, subjectOf("চাহিদা ও যোগান বাজারে মূল্য নির্ধারণ করে"))
+    assertEquals(Subject.GENERAL, subjectOf("ইতিহাস ও ভূগোল"))
+  }
+
+  @Test fun chemistryFactsStayOutOfOtherSubjects() {
+    assertTrue(ChatController.reviewRule(Subject.CHEMISTRY).contains("soot"))
+    assertFalse(ChatController.reviewRule(Subject.PHYSICS).contains("soot"))
+    assertFalse(ChatController.reviewRule(Subject.PHYSICS).contains("ammonia"))
+    assertFalse(ChatController.reviewRule(Subject.ECONOMICS).contains("combustion"))
+    assertFalse(ChatController.ocrRule(Subject.PHYSICS).contains("CH_4"))
+    assertTrue(ChatController.ocrRule(Subject.CHEMISTRY).contains("CH_4"))
+  }
+}
+
 class VoiceTest {
   private fun frame(level: Double): ShortArray = ShortArray(512) { i -> ((if (i % 2 == 0) level else -level) * 32767).toInt().toShort() }
 
