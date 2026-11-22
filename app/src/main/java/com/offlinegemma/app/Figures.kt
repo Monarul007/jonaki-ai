@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.text.Html
+import android.util.Log
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -188,15 +189,22 @@ class Figures(context: Context) {
    */
   suspend fun candidates(query: String, exclude: Collection<String>): List<Candidate> = withContext(Dispatchers.IO) {
     val words = query.trim()
-    fun search(w: String) = buildList {
-      runCatching { addAll(wikiCandidates(w)) }
-      runCatching { addAll(commonsCandidates(w)) }
+    fun search(w: String): List<Candidate> {
+      val t0 = System.currentTimeMillis()
+      val wiki = runCatching { wikiCandidates(w) }.getOrDefault(emptyList())
+      val t1 = System.currentTimeMillis()
+      val commons = runCatching { commonsCandidates(w) }.getOrDefault(emptyList())
+      val t2 = System.currentTimeMillis()
+      Log.i("Figures", "search '$w': wiki=${wiki.size} ${t1 - t0}ms, commons=${commons.size} ${t2 - t1}ms")
+      return wiki + commons
     }
     var found = search(words)
     // A Bengali query against English Wikipedia usually returns nothing. Follow the Bengali
     // article's English langlink, still with no hardcoded dictionary.
     if (found.isEmpty() && words.any { it in '\u0980'..'\u09FF' }) {
+      val te = System.currentTimeMillis()
       val en = englishTitle(words)
+      Log.i("Figures", "langlink '$words' -> $en in ${System.currentTimeMillis() - te}ms")
       if (en != null) found = search(en)
     }
     val seen = exclude.toMutableSet()
