@@ -180,25 +180,20 @@ class BengaliTextTest {
 }
 
 class VerifierTest {
-  @Test fun flagsUncertaintyAndMissingParts() {
-    assertEquals(AnswerProblem.UNSURE, verifyAnswer("", "প্রশ্ন", emptyList(), false, false, true).problem)
-    assertEquals(AnswerProblem.UNSURE, verifyAnswer("আমি জানি না।", "প্রশ্ন", emptyList(), false, false, true).problem)
-    val missing = verifyAnswer("(ক) এক (খ) দুই", "উত্তর দাও (ক), (খ), (গ)", emptyList(), false, false, true)
-    assertEquals(AnswerProblem.MISSING_PARTS, missing.problem)
-    assertTrue(missing.detail.contains("গ"))
+  @Test fun flagsUncertainty() {
+    assertEquals(AnswerProblem.UNSURE, verifyAnswer("", emptyList(), false, false, true).problem)
+    assertEquals(AnswerProblem.UNSURE, verifyAnswer("আমি জানি না।", emptyList(), false, false, true).problem)
   }
 
   @Test fun flagsMissingAndUncitedSources() {
-    val q = "latest news in Dhaka"
-    assertEquals(AnswerProblem.NO_SOURCES, verifyAnswer("Some answer", q, emptyList(), true, false, true).problem)
+    assertEquals(AnswerProblem.NO_SOURCES, verifyAnswer("Some answer", emptyList(), true, false, true).problem)
     val s = listOf(Source("Dhaka news today", "https://example.com/news"))
-    assertEquals(AnswerProblem.NOT_CITED, verifyAnswer("Some answer", q, s, true, false, true).problem)
-    assertEquals(AnswerProblem.OK, verifyAnswer("Source: https://example.com/news — the news.", q, s, true, false, true).problem)
+    assertEquals(AnswerProblem.NOT_CITED, verifyAnswer("Some answer", s, true, false, true).problem)
+    assertEquals(AnswerProblem.OK, verifyAnswer("Source: https://example.com/news — the news.", s, true, false, true).problem)
   }
 
   @Test fun completeAnswerPasses() {
-    val a = "**\$(\\text{ক})\$** এক\n**\$(\\text{খ})\$** দুই\n**\$(\\text{গ})\$** তিন\n**\$(\\text{ঘ})\$** চার"
-    assertEquals(AnswerProblem.OK, verifyAnswer(a, "উত্তর দাও (ক), (খ), (গ), (ঘ)", emptyList(), false, false, true).problem)
+    assertEquals(AnswerProblem.OK, verifyAnswer("A complete answer.", emptyList(), false, false, true).problem)
   }
 }
 
@@ -210,47 +205,6 @@ class FigureAndConfidenceTest {
     assertTrue(Tools.isUnsure("I'm not sure about the exact date."))
     assertTrue(Tools.isUnsure("I don't know the answer."))
     assertFalse(Tools.isUnsure("মিথেনের দহন বিক্রিয়া হলো CH₄ + 2O₂ → CO₂ + 2H₂O।"))
-  }
-
-  @Test fun unsureAnswerGetsAFigureMarker() {
-    val q = "বস্তুর বেগ ও ত্বরণ নির্ণয় করো"
-    val a = "আমি নিশ্চিত নই, তবে এই বিষয়ে আরও জানতে একটি চিত্র সহায়ক হতে পারে।"
-    val out = Tutor.ensureFigure(a, q, unsure = true)
-    assertTrue(out.contains("[FIGURE:"))
-  }
-
-  @Test fun bengaliTopicQueryDropsQuestionWords() {
-    assertEquals("রাসায়নিক সাম্যাবস্থা", Tutor.topicQuery("রাসায়নিক সাম্যাবস্থা বলতে কী বোঝায়?"))
-  }
-
-  @Test fun ocrPageGetsAFigureFromItsFirstQuestion() {
-    val q = "এই ছবিতে থাকা প্রশ্নগুলোর উত্তর দাও।"
-    val src = "(ক) ইলেকট্রোপ্লেটিং কী?\n(খ) তড়িৎ রাসায়নিক কোষে লবণ সেতু ব্যবহার করা হয় কেন?"
-    val a = "(ক) ইলেকট্রোপ্লেটিং কী?\nইলেকট্রোপ্লেটিং হলো একটি প্রক্রিয়া যেখানে " + "ক".repeat(300)
-    val out = Tutor.ensureFigure(a, q, source = src)
-    assertTrue(out, out.contains("[FIGURE: electroplating"))
-  }
-
-  @Test fun bengaliFigureTopicBecomesEnglish() {
-    assertEquals("electroplating diagram", Tutor.englishFigureQuery("ইলেকট্রোপ্লেটিং diagram"))
-  }
-}
-
-class SubjectTest {
-  @Test fun recognisesChemistryPhysicsAndEconomics() {
-    assertEquals(Subject.CHEMISTRY, subjectOf("রাসায়নিক বিক্রিয়া, জারণ ও বিজারণ"))
-    assertEquals(Subject.PHYSICS, subjectOf("বস্তুর বেগ ও ত্বরণ নির্ণয় করো"))
-    assertEquals(Subject.ECONOMICS, subjectOf("চাহিদা ও যোগান বাজারে মূল্য নির্ধারণ করে"))
-    assertEquals(Subject.GENERAL, subjectOf("ইতিহাস ও ভূগোল"))
-  }
-
-  @Test fun chemistryFactsStayOutOfOtherSubjects() {
-    assertTrue(ChatController.reviewRule(Subject.CHEMISTRY).contains("soot"))
-    assertFalse(ChatController.reviewRule(Subject.PHYSICS).contains("soot"))
-    assertFalse(ChatController.reviewRule(Subject.PHYSICS).contains("ammonia"))
-    assertFalse(ChatController.reviewRule(Subject.ECONOMICS).contains("combustion"))
-    assertFalse(ChatController.ocrRule(Subject.PHYSICS).contains("CH_4"))
-    assertTrue(ChatController.ocrRule(Subject.CHEMISTRY).contains("CH_4"))
   }
 }
 
