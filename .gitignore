@@ -13,3 +13,6 @@ signing.properties
 *.aab
 shots-*.png
 dist/
+
+# Test bench outputs (answers, timings) stay local
+evals/results/

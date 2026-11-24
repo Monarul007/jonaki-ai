@@ -21,7 +21,8 @@ internal fun verifyAnswer(
   if (text.contains("```html") || text.contains("```svg")) return AnswerCheck(AnswerProblem.OK)
   if (Tools.isUnsure(text)) return AnswerCheck(AnswerProblem.UNSURE)
   if (needsWeb && !offline && webSearchOn && sources.isEmpty()) return AnswerCheck(AnswerProblem.NO_SOURCES)
-  if (sources.isNotEmpty() && sources.none { cites(text, it) }) return AnswerCheck(AnswerProblem.NOT_CITED)
+  // Not cited in the text is no longer a reason for another round: the app shows the sources under
+  // the answer itself, and the extra rewrite cost minutes and often cut the answer off.
   return AnswerCheck(AnswerProblem.OK)
 }
 

@@ -65,7 +65,7 @@ object Ocr {
   @Volatile var overrideText: String? = null
 
   suspend fun readText(context: Context, path: String): String = lock.withLock {
-    overrideText?.let { return@withLock numberFormulaLines(it.trim()) }
+    overrideText?.let { return@withLock numberLines(it.trim()) }
     withContext(Dispatchers.IO) {
       runCatching {
         if (!prepare(context)) return@runCatching ""
@@ -156,41 +156,15 @@ object Ocr {
       it.delete()
     }
     android.util.Log.i("Ocr", "re-read: $swapped words replaced")
-    return numberFormulaLines(out.toString().trim())
+    return numberLines(out.toString().trim())
   }
 
   /**
-   * The printed (i), (ii), (iii) in front of a page's formula lines are tiny and misread by every
-   * reader tried (ours and banglaocr.com both turned "(ii)" into "(i)"), and the model then picked
-   * the wrong "second reaction". The app knows the layout, so it numbers those lines itself, top to
-   * bottom, and drops the misread printed marker.
-   *
-   * A formula line is decided by script, not by words: at least 3 of its tokens and at least 40% of
-   * them carry Latin letters, ASCII digits or only symbols (an equation's "+ O2 → CO2"), unlike a
-   * Bengali sentence. The printed marker is the line's first token when it is short, ends with ")"
-   * and holds no Bengali letter.
+   * Tags every line of the page with its position: [Line 1], [Line 2], … Printed numbering such as
+   * (ii) or 2. is small and every reader tried misread it (ours and banglaocr.com both turned "(ii)"
+   * into "(i)"), so the model gets a reliable position for each line as well. Nothing about the
+   * line's content is judged; the printed text stays as it was read.
    */
-  internal fun numberFormulaLines(text: String): String {
-    var n = 0
-    return text.lines().joinToString("\n") { line ->
-      val tokens = line.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
-      val marker = tokens.firstOrNull()?.takeIf { t ->
-        t.length <= 6 && t.endsWith(")") && t.none { c -> c.isLetter() && c in 'ঀ'..'৿' }
-      }
-      val body = if (marker != null) tokens.drop(1) else tokens
-      val formulaish = body.count { t ->
-        t.any { c -> (c.isLetter() && c.code < 0x250) || c in '0'..'9' } ||
-          t.none { c -> c.isLetterOrDigit() }
-      }
-      if (body.size >= 3 && formulaish >= 3 && formulaish * 10 >= body.size * 4) {
-        n++
-        "[Formula line $n] " + body.joinToString(" ")
-      } else {
-        line
-      }
-    }
-  }
-
   private var bengali: TessBaseAPI? = null
 
   /** One word box read by the Bengali-only model. */
@@ -213,6 +187,11 @@ object Ocr {
     } finally {
       crop.recycle()
     }
+  }
+
+  internal fun numberLines(text: String): String {
+    var n = 0
+    return text.lines().filter { it.isNotBlank() }.joinToString("\n") { line -> "[Line ${++n}] ${line.trim()}" }
   }
 
   /**

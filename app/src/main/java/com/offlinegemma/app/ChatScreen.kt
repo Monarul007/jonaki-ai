@@ -116,6 +116,20 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   val listState = rememberLazyListState()
 
   LaunchedEffect(Unit) { chat.loadModel() }
+  // Answers run as background jobs and say when they are ready: ask once for notifications.
+  val notifPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+    androidx.activity.result.contract.ActivityResultContracts.RequestPermission(),
+  ) {}
+  var askedNotifications by rememberSaveable { mutableStateOf(false) }
+  val ctx = androidx.compose.ui.platform.LocalContext.current
+  LaunchedEffect(chat.busy) {
+    if (chat.busy && !askedNotifications && android.os.Build.VERSION.SDK_INT >= 33) {
+      askedNotifications = true
+      if (ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+        notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+      }
+    }
+  }
 
   // Follow the answer while it streams; jump to the newest message when one is added.
   val last = chat.lines.lastOrNull()
@@ -134,13 +148,13 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   }
   var actionsFor by remember { mutableStateOf<ChatLine?>(null) }
   actionsFor?.let { l -> MessageActions(chat, speaker, l, onDismiss = { actionsFor = null }) }
-
   Box(Modifier.fillMaxSize()) {
   ModalNavigationDrawer(
     drawerState = drawer,
     drawerContent = {
       ChatDrawer(
         chat = chat,
+        // Allowed while an answer runs: it keeps going in its own chat.
         onPick = { id -> chat.openChat(id); scope.launch { drawer.close() } },
         onNew = { chat.newChat(); scope.launch { drawer.close() } },
         onSettings = { scope.launch { drawer.close() }; onSettings() },
@@ -157,14 +171,16 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
           title = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
               Text(chat.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
-              val sub = chat.status ?: when {
+              // Work running in another chat: say where, so the spinner is not mistaken for this chat.
+              val elsewhere = chat.busy && !chat.busyHere
+              val sub = (if (elsewhere) "Answering in “${chat.runningTitle}”" else chat.status) ?: when {
                 chat.loadError != null -> "Model failed to load"
                 chat.loading -> "Waking up Jonaki AI…"
                 chat.ready -> "On-device · ${chat.gemma.mode.substringBefore(" +")}"
                 else -> ""
               }
               if (sub.isNotEmpty()) {
-                val working = chat.status != null
+                val working = chat.status != null || elsewhere
                 val secs = if (working && chat.statusStartedAt > 0) {
                   ((clock - chat.statusStartedAt) / 1000).coerceAtLeast(0)
                 } else 0
@@ -190,7 +206,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
           },
           actions = {
             LanguagePill(bengali = chat.prefs.answerBengali, onChange = { chat.prefs.answerBengali = it })
-            IconButton(onClick = { chat.newChat() }, enabled = !chat.busy) { Icon(Icons.Rounded.Add, "New chat") }
+            IconButton(onClick = { chat.newChat() }) { Icon(Icons.Rounded.Add, "New chat") }
           },
           colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
         )
@@ -488,7 +504,11 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
             label = {
               Column {
                 Text(c.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(relTime(c.updated), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                  if (c.id == chat.runningChatId) "Answering…" else relTime(c.updated),
+                  style = MaterialTheme.typography.labelSmall,
+                  color = if (c.id == chat.runningChatId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
               }
             },
             icon = { Icon(Icons.Rounded.ChatBubbleOutline, null) },

@@ -22,9 +22,32 @@ import kotlinx.coroutines.withContext
 class ChatController(private val app: Application, val gemma: GemmaEngine, val store: ChatStore, val prefs: Prefs) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-  val lines = mutableStateListOf<ChatLine>()
+  /**
+   * One chat: its messages, title and message-id counter. The screen shows [shown]; an answer and its
+   * picture search work on [running], the chat they started in, so the user can read other chats while
+   * an answer is still being written there.
+   */
+  class ChatRef(val id: String, title: String, initial: List<ChatLine> = emptyList()) {
+    val lines = mutableStateListOf<ChatLine>().apply { addAll(initial) }
+    var title by mutableStateOf(title)
+    var nextId = (initial.maxOfOrNull { it.id } ?: 0) + 1
+  }
+  private var shown by mutableStateOf(ChatRef(store.newId(), "New chat"))
+  /** The chat an answer or picture search is working on; null when idle. */
+  private var running by mutableStateOf<ChatRef?>(null)
+  private val work: ChatRef get() = running ?: shown
 
-  /** Textbook pictures: what each figure card shows, keyed by "<answer id>|<figure number>". */
+  /** The messages on screen. */
+  val lines: List<ChatLine> get() = shown.lines
+  val chatId: String get() = shown.id
+  val title: String get() = shown.title
+  /** The chat an answer is being written in (may differ from the one on screen). */
+  val runningChatId: String? get() = running?.id
+  val runningTitle: String? get() = running?.title
+  /** True when the work in progress belongs to the chat on screen. */
+  val busyHere: Boolean get() = busy && (running == null || running === shown)
+
+  /** Textbook pictures: what each figure card shows, keyed by "<chat id>|<answer id>|<figure number>". */
   sealed class FigState {
     data class Busy(val message: String) : FigState()
     data class Done(val figure: Figure) : FigState()
@@ -34,8 +57,6 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   val figures = Figures(app)
   val chats = mutableStateListOf<ChatSummary>()
 
-  var chatId by mutableStateOf(store.newId()); private set
-  var title by mutableStateOf("New chat"); private set
   var ready by mutableStateOf(false); private set
   var loading by mutableStateOf(false); private set
   var loadError by mutableStateOf<String?>(null); private set
@@ -55,7 +76,6 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       }
     }
 
-  private var nextId = 1L
   private var job: Job? = null
   // Auto-fix happens at most once per message the user sends (same as desktop).
   private var autoFixes = 0
@@ -96,52 +116,142 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     ready = false
   }
 
-  private fun newLineId() = nextId++
-  private fun indexOf(id: Long) = lines.indexOfFirst { it.id == id }
-  private fun update(id: Long, f: (ChatLine) -> ChatLine) {
-    val i = indexOf(id)
-    if (i >= 0) lines[i] = f(lines[i])
+  private fun newLineId(ref: ChatRef = work) = ref.nextId++
+  private fun indexOf(id: Long, ref: ChatRef = work) = ref.lines.indexOfFirst { it.id == id }
+  /** Changes one message of [ref] (by default the chat being worked on, not the one on screen). */
+  private fun update(id: Long, ref: ChatRef = work, f: (ChatLine) -> ChatLine) {
+    val i = indexOf(id, ref)
+    if (i >= 0) ref.lines[i] = f(ref.lines[i])
+  }
+  private fun lineOf(id: Long, ref: ChatRef = work) = ref.lines.getOrNull(indexOf(id, ref))
+
+  /**
+   * Work waiting for the model, which runs one job at a time: answers first (in the order asked), then
+   * picture searches. [userLineId] marks where the queued question starts in its chat, so the model's
+   * context can be rebuilt from the messages before it.
+   */
+  private class Queued(val target: ChatRef, val answerId: Long, val userLineId: Long?, val figures: Boolean, val start: () -> Unit)
+  private val queue = mutableStateListOf<Queued>()
+  private var runningFigures = false
+  private var figuresPreempted = false
+
+  /** Answers waiting for their turn (pictures are not counted). */
+  val waitingAnswers: Int get() = queue.count { !it.figures }
+  /** This chat has a question waiting for its turn. */
+  val waitingHere: Boolean get() = queue.any { !it.figures && it.target === shown }
+  /** How many answers run before answer [answerId] of the chat on screen; null when it is not waiting. */
+  fun queuePosition(answerId: Long): Int? {
+    val asks = queue.filter { !it.figures }
+    val i = asks.indexOfFirst { it.target === shown && it.answerId == answerId }
+    return if (i < 0) null else i + (if (running != null) 1 else 0)
+  }
+
+  /** The job (answer and picture search) finished: start the next one, or free the model. */
+  private fun endRun(ran: ChatRef) {
+    running = null
+    runningFigures = false
+    val next = queue.firstOrNull { !it.figures } ?: queue.firstOrNull()
+    if (next != null) {
+      queue.remove(next)
+      if (!next.figures && ready) {
+        // The next question may be in another chat: give the model that chat's messages before it.
+        val before = next.target.lines.takeWhile { it.id != next.userLineId }
+        chatReset = scope.launch { gemma.startChat(history(before)) }
+      }
+      next.start()
+      return
+    }
+    AnswerService.finish(app)
+    // The user moved to another chat meanwhile: the model still holds the finished chat's context.
+    if (shown !== ran && ready) chatReset = scope.launch { gemma.startChat(history(shown.lines)) }
+  }
+
+  /** A new question while a picture search runs: the search steps aside and goes back in the queue. */
+  private fun preemptFigures() {
+    if (!runningFigures) return
+    figuresPreempted = true
+    gemma.stop()
+    job?.cancel()
+  }
+
+  /** Cancels this chat's questions that are still waiting for their turn. */
+  fun cancelWaitingHere() {
+    val mine = queue.filter { !it.figures && it.target === shown }
+    queue.removeAll(mine)
+    for (q in mine) update(q.answerId, q.target) { it.copy(done = true, error = "Cancelled before it started.") }
+    save(shown)
+  }
+
+  /** The ongoing notification: what runs now and how many wait. */
+  private fun showProgress(ref: ChatRef) {
+    val waiting = waitingAnswers
+    AnswerService.progress(
+      app,
+      "Answering in “${ref.title}”" + if (waiting > 0) " · $waiting waiting" else "",
+    )
+  }
+
+  /** Answer ready: tell the user unless they are already looking at that chat. */
+  private fun notifyReady(ref: ChatRef, answerId: Long) {
+    val line = lineOf(answerId, ref) ?: return
+    if (line.text.isBlank()) return
+    val visible = androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.currentState
+      .isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)
+    if (visible && shown === ref) return
+    AnswerService.ready(app, ref.id, ref.title, line.text)
   }
 
   // ---------- chats ----------
 
+  /** A fresh chat on screen. Allowed while an answer runs elsewhere: it keeps going in its own chat. */
   fun newChat() {
-    if (busy) return
-    lines.clear()
     draft.clear()
-    chatId = store.newId()
-    title = "New chat"
+    shown = ChatRef(store.newId(), "New chat")
     autoFixes = 0
-    scope.launch { if (ready) gemma.startChat(emptyList()) }
+    if (!busy) chatReset = scope.launch { if (ready) gemma.startChat(emptyList()) }
   }
 
+  /**
+   * The model conversation is rebuilt in the background after New chat / opening a chat. A message
+   * sent before that finished used to start on the old conversation, which was then closed under it
+   * ("Conversation is not alive"). sendToModel waits for this first.
+   */
+  private var chatReset: Job? = null
+
+  /**
+   * Shows chat [id]. While an answer is running (here or in another chat) the model's conversation is
+   * left alone; [endRun] rebuilds it for the chat on screen when the answer is done. Opening the
+   * chat that is being answered shows its live messages, not the older saved copy.
+   */
   fun openChat(id: String) {
-    if (busy || id == chatId) return
-    val (t, saved) = store.load(id) ?: return
-    lines.clear()
-    lines.addAll(saved)
-    nextId = (saved.maxOfOrNull { it.id } ?: 0) + 1
-    chatId = id
-    title = t
+    if (id == chatId) return
+    val ref = running?.takeIf { it.id == id }
+      ?: store.load(id)?.let { (t, saved) -> ChatRef(id, t, saved) }
+      ?: return
+    shown = ref
     autoFixes = 0
-    scope.launch { if (ready) gemma.startChat(history(saved)) }
+    if (!busy) chatReset = scope.launch { if (ready) gemma.startChat(history(ref.lines)) }
   }
 
   fun renameChat(id: String, newTitle: String) {
     val t = newTitle.trim().ifEmpty { return }
     store.rename(id, t)
-    if (id == chatId) title = t
+    if (id == chatId) shown.title = t
+    running?.takeIf { it.id == id }?.title = t
     refreshChats()
   }
 
   fun deleteChat(id: String) {
-    if (id == chatId) {
-      if (busy) return
-      store.delete(id)
-      newChat()
-    } else {
-      store.delete(id)
+    if (running?.id == id) {
+      // Deleting the chat being answered: stop the answer first, and let its last save finish so it
+      // cannot write the chat back after the delete.
+      val j = job
+      stop()
+      scope.launch { j?.join(); lastSave?.join(); deleteChat(id) }
+      return
     }
+    store.delete(id)
+    if (id == chatId) newChat()
     refreshChats()
   }
 
@@ -152,13 +262,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     refreshChats()
   }
 
-  private fun save() {
-    if (lines.none { it.who == Who.USER }) return
-    if (title == "New chat") title = titleFrom(lines.first { it.who == Who.USER }.display)
-    val snapshot = lines.toList()
-    val id = chatId
-    val t = title
-    scope.launch(Dispatchers.IO) {
+  private var lastSave: Job? = null
+
+  private fun save(ref: ChatRef = work) {
+    if (ref.lines.none { it.who == Who.USER }) return
+    if (ref.title == "New chat") ref.title = titleFrom(ref.lines.first { it.who == Who.USER }.display)
+    val snapshot = ref.lines.toList()
+    val id = ref.id
+    val t = ref.title
+    lastSave = scope.launch(Dispatchers.IO) {
       store.save(id, t, snapshot)
       withContext(Dispatchers.Main) { refreshChats() }
     }
@@ -178,7 +290,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   // ---------- sending ----------
 
   // Wait for an attachment import too: sending in the middle of a copy used to drop the picture.
-  fun canSend() = ready && !busy && !importing
+  fun canSend() = ready && !busy && !importing && running == null && queue.isEmpty()
+
+  /** A typed question can always be sent once the model is loaded: it waits in the queue if needed. */
+  fun canAsk() = ready && !importing
 
   /** Pictures, voice clips and documents waiting to be sent with the next message. */
   val draft = mutableStateListOf<Attachment>()
@@ -231,7 +346,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
    */
   fun sendTyped(text: String, voice: Boolean = false, extra: List<Attachment> = emptyList()) {
     val atts = draft.toList() + extra
-    if ((text.isBlank() && atts.isEmpty()) || !canSend()) return
+    if ((text.isBlank() && atts.isEmpty()) || !canAsk()) return
     autoFixes = 0
     draft.clear()
     val docs = atts.filter { it.kind == Attachment.Kind.DOC }
@@ -280,7 +395,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     if (prefs.answerBengali) "($BENGALI_RULE)\n\n$modelText" else modelText
 
   fun notice(text: String) {
-    lines.add(ChatLine(newLineId(), Who.NOTICE, text))
+    shown.lines.add(ChatLine(newLineId(shown), Who.NOTICE, text))
   }
 
   /**
@@ -301,26 +416,63 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     links: List<String> = emptyList(),
     linkQuery: String = "",
     offline: Boolean = false,
+    target: ChatRef = shown,
   ) {
-    val userLine = ChatLine(newLineId(), Who.USER, modelText, display, topic = topic, attachments = attachments)
-    lines.add(userLine)
-    val answerId = newLineId()
-    lines.add(ChatLine(answerId, Who.MODEL, "", done = false))
+    // Everything below works on the chat the question was asked in, even if the user opens another.
+    val userLine = ChatLine(newLineId(target), Who.USER, modelText, display, topic = topic, attachments = attachments)
+    target.lines.add(userLine)
+    val answerId = newLineId(target)
+    target.lines.add(ChatLine(answerId, Who.MODEL, "", done = false))
+    // Saved now so a brand-new chat is in the history list while it is being answered.
+    save(target)
+    val begin = { runAnswer(target, answerId, display, modelText, topic, rebuild, sources, attachments, voice, testCode, codeFixed, agent, links, linkQuery, offline) }
+    if (running != null || busy) {
+      // The model is busy: wait for the turn (a running picture search steps aside).
+      queue.add(Queued(target, answerId, userLine.id, figures = false, start = begin))
+      preemptFigures()
+      running?.let { showProgress(it) }
+    } else {
+      begin()
+    }
+  }
+
+  /** The answer job itself, started when the model is free (see [endRun]). */
+  private fun runAnswer(
+    target: ChatRef,
+    answerId: Long,
+    display: String,
+    modelText: String,
+    topic: String?,
+    rebuild: List<ChatLine>?,
+    sources: List<Source>,
+    attachments: List<Attachment>,
+    voice: Boolean,
+    testCode: Boolean,
+    codeFixed: Boolean,
+    agent: Boolean,
+    links: List<String>,
+    linkQuery: String,
+    offline: Boolean,
+  ) {
+    running = target
     busy = true
+    showProgress(target)
     var fixCode: String? = null
     var findFigures: Pair<Long, String>? = null
     job = scope.launch {
       try {
+        chatReset?.join()
         if (rebuild != null) gemma.startChat(history(rebuild))
         // Pictures and voice go to the model only if this phone loaded the image/audio parts.
         val imageAtts = attachments.filter { it.kind == Attachment.Kind.IMAGE }
         val images = if (gemma.canSee) imageAtts.mapNotNull { readBytes(it) } else emptyList()
         val audio = if (gemma.canHear) attachments.filter { it.kind == Attachment.Kind.AUDIO }.mapNotNull { readBytes(it) } else emptyList()
 
-        // No vision on this load: read the text in the picture on the phone (Bengali + English).
-        // Without this the photo used to be dropped silently and the model said "no image".
+        // Read the text in the picture on the phone (Bengali + English) whenever a picture is sent.
+        // Without vision this is all the model gets; with vision it gets both, because the small
+        // model's own look at a page (shrunk to a fixed size) could not read small print at all.
         var ocrText = ""
-        if (!gemma.canSee && imageAtts.isNotEmpty()) {
+        if (imageAtts.isNotEmpty()) {
           status = "Reading the text in the picture…"
           ocrText = imageAtts.mapNotNull { a ->
             Ocr.readText(app, a.ocrPath ?: a.path).takeIf { it.length >= 12 }
@@ -348,6 +500,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           append(modelText)
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
+            if (images.isNotEmpty()) {
+              append("[The picture itself is attached as well. Use it to check the layout and anything ")
+              append("the text reading may have got wrong, such as printed numbering; for small print the ")
+              append("text reading is usually more reliable.]\n")
+            }
             append(ocrText)
             if (research.isNotBlank()) {
               append("\n\n[Web results for checking the facts. Where they disagree with your memory, ")
@@ -357,10 +514,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             // The user's instruction is the only scope; keep it last, after the page text.
             append("\n\n[Now follow my instruction, and only it: \"")
             append(modelText.take(300))
-            append("\". Answer only what it asks. If it asks for one part (for example (খ) or 'kh'), ")
-            append("start with that part and do not answer (ক), (গ) or (ঘ). If a diagram or picture ")
-            append("would clearly help, add one line like [FIGURE: photosynthesis diagram], replacing ")
-            append("the words with this topic's English search words. The page text above is reference only.]")
+            append("\". Answer only what it asks; if it asks for one part, answer only that part. If a ")
+            append("diagram or picture would clearly help, add one line [FIGURE: English search words for ")
+            append("it]. The page text above is reference only.]")
           } else if (!gemma.canSee && imageAtts.isNotEmpty()) {
             append("\n[This phone could not read the attached picture. Tell me that the picture's text could ")
             append("not be read on this phone; do not say that no picture was attached.]")
@@ -426,6 +582,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             // A stuck round must not hang the chat: stop the model and keep the best answer so far.
             gemma.stop()
             status = null
+            // The visible answer was cut mid-sentence: say so instead of passing it off as complete.
+            if (!rewriting) update(answerId) {
+              it.copy(text = it.text.trimEnd() + "\n\n_" + (if (bengaliAnswer) STOPPED_BN else STOPPED_EN) + "_")
+            }
             break
           }
           first = false
@@ -459,7 +619,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             rewriting = false
             // Length invariant, not wording: a rewrite far shorter than the answer it replaces is a
             // comment ("please specify…"), not a corrected answer. Keep the answer on screen.
-            val current = lines.getOrNull(indexOf(answerId))?.text.orEmpty()
+            val current = lineOf(answerId)?.text.orEmpty()
             if (out.isNotBlank() && out.length * 3 < current.length) {
               Log.i("ChatController", "rewrite rejected: ${out.length} chars vs ${current.length}")
               out = current
@@ -508,7 +668,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             val prev = out.take(2500)
             gemma.startChat(emptyList(), "")
             resetChat = true
-            prompt = "Page text:\n${ocrText.take(if (research.isNotBlank()) 1200 else 1500)}\n\n" +
+            prompt = "My question:\n${(topic ?: display).take(300)}\n\n" +
+              "Page text:\n${ocrText.take(if (research.isNotBlank()) 1200 else 1500)}\n\n" +
               (if (research.isNotBlank()) "Web results:\n${research.take(1500)}\n\n" else "") +
               "Your previous answer:\n$prev\n\n" + reviewRule(research.isNotBlank())
             if (agent) prompt = "(${Tools.PROMPT})\n\n$prompt"
@@ -593,6 +754,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             // Each verification round gets a bounded context too: page + previous answer + sources.
             val prev = out.take(2500)
             val context = buildString {
+              // The round starts a fresh conversation: without the question the model only saw its
+              // own answer and replied "please provide the question".
+              append("My question:\n${(topic ?: display).take(600)}\n\n")
               if (ocrText.isNotBlank()) append("Page text:\n${ocrText.take(1200)}\n\n")
               append("Your previous answer:\n$prev\n\n")
               if (found.isNotEmpty()) {
@@ -619,7 +783,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
         // A review/verifier reset used a compact context; give the chat its full memory back.
-        if (resetChat) gemma.startChat(history(lines))
+        if (resetChat || shown !== target) gemma.startChat(history(lines))
         // Pictures are found after the answer, one at a time; never while talk mode is speaking.
         if (!voice) findFigures = answerId to (topic ?: display)
         if (testCode) fixCode = testAnswer(answerId, codeFixed)
@@ -629,17 +793,27 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         update(answerId) { if (it.done) it else it.copy(done = true) }
         busy = false
         status = null
-        save()
-        lines.getOrNull(indexOf(answerId))?.let { onAnswerDone?.invoke(it) }
-        findFigures?.let { (id, q) -> if (fixCode == null) startFigures(id, q) }
-        // The code crashed: ask once for a fix, and test the fixed code too (same as agent.py _check_code).
-        fixCode?.let { err ->
-          sendToModel(
+        save(target)
+        lineOf(answerId, target)?.let { onAnswerDone?.invoke(it) }
+        notifyReady(target, answerId)
+        val err = fixCode
+        val fig = findFigures
+        when {
+          // The code crashed: ask once for a fix, and test the fixed code too (same as agent.py _check_code).
+          err != null -> sendToModel(
             "🔧 Fix the code (automatic)",
             "I ran your code and it failed:\n${err.takeLast(1200)}\nGive the corrected full code in one ```javascript block. Keep it short.",
             testCode = true,
             codeFixed = true,
+            target = target,
           )
+          // Questions are waiting: they go first, the picture search queues after them.
+          fig != null && queue.any { !it.figures } -> {
+            queue.add(Queued(target, fig.first, null, figures = true) { startFigures(fig.first, fig.second, ref = target) })
+            endRun(target)
+          }
+          fig != null -> startFigures(fig.first, fig.second, ref = target)
+          else -> endRun(target)
         }
       }
     }
@@ -647,20 +821,27 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   /** What a figure card shows. Saved chats show cached pictures instantly and never re-check them. */
   fun figState(answer: ChatLine, n: Int, query: String): FigState? {
-    val k = "${answer.id}|$n"
+    val k = "$chatId|${answer.id}|$n"
     figStates[k]?.let { return it }
     if (!answer.done) return null // still streaming: "comes when the answer is done"
-    val used = (1 until n).mapNotNull { (figStates["${answer.id}|$it"] as? FigState.Done)?.figure?.file }
+    val used = (1 until n).mapNotNull { (figStates["$chatId|${answer.id}|$it"] as? FigState.Done)?.figure?.file }
     val hit = figures.cached(query, used)
     // Not stored here: this runs while the screen draws (the screen remembers it).
     return if (hit != null) FigState.Done(hit) else FigState.None("no picture saved yet", retry = true)
   }
 
   /** Finds pictures for every figure in an answer (after it finishes). */
-  private fun startFigures(answerId: Long, question: String, only: Int? = null) {
-    val answer = lines.getOrNull(indexOf(answerId)) ?: return
-    if (answer.text.isBlank() || answer.text.contains("```")) return
+  private fun startFigures(answerId: Long, question: String, only: Int? = null, ref: ChatRef = work) {
+    val answer = lineOf(answerId, ref)
+    if (answer == null || answer.text.isBlank() || answer.text.contains("```")) {
+      if (running === ref) endRun(ref)
+      return
+    }
+    running = ref
     busy = true
+    runningFigures = true
+    figuresPreempted = false
+    status = "Finding a picture…"
     job = scope.launch {
       var usedModel = false
       try {
@@ -691,7 +872,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val used = mutableListOf<String>()
         for ((i, q) in queries.withIndex()) {
           val n = i + 1
-          val k = "$answerId|$n"
+          val k = "${ref.id}|$answerId|$n"
           val cachedHit = figures.cached(q, used)
           if (cachedHit != null) { figStates[k] = FigState.Done(cachedHit); used.add(cachedHit.file); continue }
           if (only != null && n != only) { (figStates[k] as? FigState.Done)?.let { used.add(it.figure.file) }; continue }
@@ -702,8 +883,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           if (f != null) { figStates[k] = FigState.Done(f); used.add(f.file) }
         }
       } catch (t: kotlinx.coroutines.CancellationException) {
-        figStates.keys.filter { it.startsWith("$answerId|") && figStates[it] is FigState.Busy }
-          .forEach { figStates[it] = FigState.None("stopped", retry = true) }
+        if (figuresPreempted) {
+          // A new question took the model: show the cards as waiting and search again afterwards.
+          figStates.keys.filter { it.startsWith("${ref.id}|$answerId|") && figStates[it] is FigState.Busy }
+            .forEach { figStates[it] = FigState.Busy("Waiting for the next answer to finish…") }
+          queue.add(Queued(ref, answerId, null, figures = true) { startFigures(answerId, question, only, ref) })
+        } else {
+          figStates.keys.filter { it.startsWith("${ref.id}|$answerId|") && figStates[it] is FigState.Busy }
+            .forEach { figStates[it] = FigState.None("stopped", retry = true) }
+        }
         throw t
       } finally {
         // The picture checks used the model on their own; give the chat its memory back.
@@ -711,6 +899,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         Log.i("Figures", "finish id=$answerId")
         busy = false
         status = null
+        endRun(ref)
       }
     }
   }
@@ -780,8 +969,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** "🖼️ Find picture" on one figure card. */
   fun findPicture(answerId: Long, n: Int) {
     if (!canSend()) return
-    val q = lines.subList(0, indexOf(answerId).coerceAtLeast(0)).lastOrNull { it.who == Who.USER }?.let { it.topic ?: it.display } ?: ""
-    startFigures(answerId, q, only = n)
+    val q = lines.subList(0, indexOf(answerId, shown).coerceAtLeast(0)).lastOrNull { it.who == Who.USER }?.let { it.topic ?: it.display } ?: ""
+    startFigures(answerId, q, only = n, ref = shown)
   }
 
   /**
@@ -792,19 +981,36 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   private suspend fun researchPage(
     answerId: Long, page: String, ask: String, question: String, found: MutableList<Source>,
   ): String {
+    // Two small steps a small model can do. Step 1: copy the page lines the question is about (it
+    // may point at them by number or position). Step 2: a search phrase for that content. The app
+    // only passes the copied text along; it never interprets the reply.
+    status = "Finding what the question is about…"
+    val about = runCatching {
+      gemma.oneShot(
+        "Page text (each line tagged with its position):\n${page.take(1500)}\n\nMy instruction: ${ask.take(300)}\n\n" +
+          "Copy, word for word, the page lines that hold what my instruction's question is about, " +
+          "including any lines the question points to by number or position. Reply with those lines only.",
+        160,
+      ).trim()
+    }.getOrDefault("")
+    Log.i("ChatController", "page research about='${about.take(200)}'")
     status = "Planning what to look up…"
     val raw = runCatching {
       gemma.oneShot(
-        "Page text:\n${page.take(1200)}\n\nMy instruction: ${ask.take(300)}\n\n" +
-          "Write one short English web search query (3 to 8 words) that finds the facts needed to " +
-          "answer exactly what my instruction asks. Reply with the query only.",
-        30,
+        "My instruction: ${ask.take(300)}\n\n" +
+          (if (about.isNotBlank()) "It is about these lines from a photographed page (the photo reading may have garbled some characters):\n${about.take(800)}\n\n"
+          else "Page text:\n${page.take(1200)}\n\n") +
+          "Write one short English web search query (3 to 8 words) that names the subject itself, so " +
+          "that a search engine, which cannot see the page, finds the facts needed. Reply with the query only.",
+        40,
       )
     }.getOrDefault("")
     // oneShot closed the chat; reopen it without the turn being answered now.
-    gemma.startChat(history(lines.dropLast(2)))
+    gemma.startChat(history(work.lines.dropLast(2)))
     val query = raw.lineSequence().map { it.trim().trim('"', '`', '*', '\'').trim() }
-      .firstOrNull { it.isNotBlank() }.orEmpty().take(120)
+      .firstOrNull { it.isNotBlank() }.orEmpty()
+      .let { l -> if (l.indexOf(':') in 0..24) l.substringAfter(':').trim().trim('"', '\'') else l }
+      .take(120)
     Log.i("ChatController", "page research query='$query'")
     status = null
     if (query.isBlank()) return ""
@@ -819,6 +1025,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val usablePage = pageText.isNotBlank() && !pageText.startsWith("Error") &&
       !pageText.startsWith("The page came back almost empty")
     return buildString {
+      // Tell the answer step which page lines the question is about.
+      if (about.isNotBlank()) append("The question is about these page lines:\n").append(about.take(800)).append("\n\n")
       append("Tool result for web_search:\n").append(results.take(1000))
       if (usablePage) append("\n\nTool result for web_fetch (${top?.url}):\n").append(pageText.take(1400))
     }
@@ -862,7 +1070,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
    * Returns the error when it crashed and no fix was tried yet.
    */
   private suspend fun testAnswer(answerId: Long, alreadyFixed: Boolean): String? {
-    val answer = lines.getOrNull(indexOf(answerId))?.text ?: return null
+    val answer = lineOf(answerId)?.text ?: return null
     val code = JsRunner.codeIn(answer) ?: return null
     if (!JsRunner.runnable(code)) return null
     status = "Testing the code…"
@@ -888,7 +1096,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   fun stop() {
     gemma.stop()
     job?.cancel()
-    lines.lastOrNull()?.let { last -> if (!last.done) update(last.id) { it.copy(done = true) } }
+    work.lines.lastOrNull()?.let { last -> if (!last.done) update(last.id) { it.copy(done = true) } }
     busy = false
     status = null
     save()
@@ -901,7 +1109,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     if (lastUser < 0) return
     val user = lines[lastUser]
     val before = lines.subList(0, lastUser).toList()
-    while (lines.size > lastUser) lines.removeAt(lines.lastIndex)
+    while (shown.lines.size > lastUser) shown.lines.removeAt(shown.lines.lastIndex)
     sendToModel(user.display, user.text, user.topic, rebuild = before, attachments = user.attachments)
   }
 
@@ -921,7 +1129,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val need = gemma.tokensUsed + newChars / CHARS_PER_TOKEN + reserve
     if (need <= gemma.maxTokens) return
     // Everything before the user turn just added.
-    val past = lines.dropLast(2).filter { (it.who == Who.USER || it.who == Who.MODEL) && it.done && it.error == null }
+    val past = work.lines.dropLast(2).filter { (it.who == Who.USER || it.who == Who.MODEL) && it.done && it.error == null }
     if (past.size < 2) return
     val budget = (gemma.maxTokens - reserve) * CHARS_PER_TOKEN
     var keepFrom = past.size
@@ -960,7 +1168,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       notice("✅ Check facts uses web search, which is off. Turn it on in Settings.")
       return
     }
-    val i = indexOf(answerId)
+    val i = indexOf(answerId, shown)
     val question = lines.subList(0, i.coerceAtLeast(0)).lastOrNull { it.topic != null }?.topic
     if (question == null) {
       notice("✅ Check facts: ask a question first, then I can check the answer.")
@@ -982,12 +1190,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   }
 
   fun onDemoError(answerId: Long, error: String) {
-    val line = lines.getOrNull(indexOf(answerId)) ?: return
+    val line = lines.getOrNull(indexOf(answerId, shown)) ?: return
     if (line.demoError != null) return // already handled (the WebView may reload when scrolled)
     // Fix on its own only while this reply is still the newest one; never interrupt a later chat (a quiz).
     val newest = lines.lastOrNull { it.who == Who.MODEL }?.id == answerId
     val auto = newest && autoFixes < 1
-    update(answerId) { it.copy(demoError = error, autoFixing = auto) }
+    update(answerId, shown) { it.copy(demoError = error, autoFixing = auto) }
     if (auto) {
       autoFixes++
       pendingFix = Tutor.fixPrompt(error, Tutor.firstDemo(line.text))
@@ -1010,15 +1218,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   }
 
   fun fixDemo(answerId: Long) {
-    val line = lines.getOrNull(indexOf(answerId)) ?: return
+    val line = lines.getOrNull(indexOf(answerId, shown)) ?: return
     if (!canSend()) return
     sendToModel("🔧 Fix this demo", Tutor.fixPrompt(line.demoError ?: "", Tutor.firstDemo(line.text)))
   }
 
   /** Developer builds only: drop a canned tutor answer in, to test demos without waiting for the model. */
   fun injectTest(kind: String) {
-    lines.add(ChatLine(newLineId(), Who.USER, "Show me a pendulum demo", "Show me a pendulum demo (test)"))
-    lines.add(ChatLine(newLineId(), Who.MODEL, if (kind == "net") TestDemos.netProbe() else TestDemos.reply(kind == "broken")))
+    shown.lines.add(ChatLine(newLineId(shown), Who.USER, "Show me a pendulum demo", "Show me a pendulum demo (test)"))
+    shown.lines.add(ChatLine(newLineId(shown), Who.MODEL, if (kind == "net") TestDemos.netProbe() else TestDemos.reply(kind == "broken")))
   }
 
   companion object {
@@ -1047,46 +1255,42 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
     /** Prompt for answers read from a picture; generic, so the model owns the subject. */
     internal fun ocrRule(): String = buildString {
-      append("[The text below was read from my picture by on-device OCR and may contain mistakes. ")
-      append("First silently repair obvious OCR errors using the subject and context: a Latin-looking ")
-      append("fragment inside a Bengali sentence is usually a misread Bengali word; a garbled word ")
-      append("beside a known term is that term; broken formulas should be rebuilt from the surrounding ")
-      append("names. Do not repeat garbled text. If the page has numbered statements (i), (ii), (iii) ")
-      append("and lettered questions (ক), (খ), (গ), (ঘ), the numbered lines are the stimulus: answer the ")
-      append("lettered questions only, not the equations. The app numbered the page's formula lines in ")
-      append("order as [Formula line 1], [Formula line 2], …, because OCR misreads the printed (i), (ii), ")
-      append("(iii). When a question names a statement ('the second reaction', '(ii)'), it means the ")
-      append("[Formula line] with that number: (i) or first = 1, (ii) or second = 2, (iii) or third = 3. ")
-      append("If my question asks for only one part (for ")
-      append("example only (ক)), answer only that part. Otherwise answer every visible part separately in ")
-      append("Bengali, 2-4 sentences each, with precise textbook definitions. Write equations with real ")
-      append("symbols (→, subscripts) and name every product; never write the word 'products' inside ")
-      append("an equation. For an explanatory answer, add one line like [FIGURE: photosynthesis diagram] ")
-      append("where a picture would help, replacing those words with this topic's English search words; ")
-      append("the picture search uses English. Write only Bengali words ")
-      append("(English technical names in brackets are fine); never use words from other languages. ")
-      append("Do not write an essay; do not say that no picture was attached.]")
+      append("[The text below was read from my picture by on-device OCR, line by line; the app tagged ")
+      append("each line with its position as [Line 1], [Line 2], … OCR makes mistakes: words can be ")
+      append("misread, and small raised or lowered characters, symbols and printed numbering are often ")
+      append("wrong. Silently repair what the context makes clear. Never copy garbled text into your ")
+      append("answer: write it correctly, or describe it in words if you are not sure. When a question ")
+      append("points to part of the page by number or position, count the lines it means by their ")
+      append("position, because the printed numbering may be misread. If the page holds several ")
+      append("questions, answer only the one I ask for, or each separately if I ask for all. Start each ")
+      append("answer with one sentence that answers it directly, then explain the main reason in a few ")
+      append("sentences; add a formula, example, steps or code only when the question needs it. Stay on ")
+      append("what was asked. For an explanatory answer, add one line [FIGURE: English search words] ")
+      append("where a picture would help. Write in one language only (technical names in brackets are ")
+      append("fine). Do not say that no picture was attached.]")
     }
 
     /** After an OCR answer: a generic correctness pass. */
     internal fun reviewRule(withWeb: Boolean = false): String = buildString {
       if (withWeb) {
-        append("Check every fact and equation in your previous answer against the web results above. ")
+        append("Check every fact in your previous answer against the web results above. ")
         append("Where they disagree, the web results win. Name the source you used. ")
       }
       append("Rewrite your previous answer, correcting any factual mistake. Do not comment on this ")
       append("request or mention that you are checking; output only the corrected answer. Keep every ")
       append("part the user asked for: if the previous answer covered every part, the corrected answer ")
       append("must cover all of them and never drop one. If my question asked for only one part, keep ")
-      append("only that part and do not add the others. Check the answer against the passage: ")
-      append("definitions, examples, equations, units and numbers. An example must not contradict the ")
-      append("definition. Check each equation symbol by symbol: every element, subscript, coefficient ")
-      append("and charge must balance on both sides; use the real arrow (→); name every product instead ")
-      append("of writing the word 'products'. If the question asks for a comparison, say which one and ")
+      append("only that part and do not add the others. Check the answer against the page and the ")
+      append("sources: names, numbers, units and any formula or code, symbol by symbol. An example must ")
+      append("not contradict the definition. If the question asks for a comparison, say which one and ")
       append("why. Do not invent names, data or formulas. Keep any [FIGURE: ...] marker and ")
-      append("write its search words in English. Write only Bengali words, never words ")
-      append("from other languages. Keep each part to 2-4 sentences, in Bengali. ")
+      append("write its search words in English. Write in the same language as your previous answer, ")
+      append("one language only, and keep it about as short as before. ")
     }
+
+    /** Added to an answer the time limit cut off, so it is never passed off as complete. */
+    const val STOPPED_EN = "(This answer was stopped because it took too long. Ask again for the rest.)"
+    const val STOPPED_BN = "(উত্তরটি বেশি সময় নেওয়ায় এখানে থামানো হয়েছে। বাকি অংশের জন্য আবার জিজ্ঞাসা করুন।)"
 
     /** When the phone has no internet: answer anyway, but say it may be old. */
     const val OFFLINE_RULE =
@@ -1112,7 +1316,8 @@ internal fun keepBengali(text: String): String =
     // Keep Bengali; drop the foreign writing systems the small model sometimes slips into.
     code in 0x0980..0x09FF || (
       code !in 0x0530..0x06FF &&   // Armenian, Hebrew, Arabic
-        code !in 0x0900..0x0DFF && // Indic scripts other than Bengali
+        // Indic scripts other than Bengali; the danda । and double danda ॥ are Bengali's full stops.
+        (code !in 0x0900..0x0DFF || code == 0x0964 || code == 0x0965) &&
         code !in 0x0E00..0x0E7F && // Thai
         code !in 0x10A0..0x10FF && // Georgian
         code !in 0x1100..0x11FF && // Hangul Jamo

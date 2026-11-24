@@ -117,7 +117,11 @@ fun Answer(
     }
     if (line.tools.isNotEmpty()) ToolChips(line.tools)
     if (line.text.isEmpty() && !line.done) {
-      Shimmer()
+      Shimmer(
+        chat?.queuePosition(line.id)?.let { ahead ->
+          if (ahead <= 0) "Waiting for its turn…" else "Waiting… $ahead ahead"
+        } ?: "Thinking…",
+      )
     } else {
       AnswerBody(line, onDemoError, onFix, canAct, chat, onOpen)
     }
@@ -249,7 +253,7 @@ private fun Avatar(thinking: Boolean) {
 
 /** Three soft bars that shimmer while Gemma is thinking (before the first word). */
 @Composable
-private fun Shimmer() {
+private fun Shimmer(label: String = "Thinking…") {
   val t = rememberInfiniteTransition(label = "shimmer")
   val x by t.animateFloat(-300f, 900f, infiniteRepeatable(tween(1300)), label = "x")
   val base = MaterialTheme.colorScheme.surfaceContainerHigh
@@ -259,7 +263,7 @@ private fun Shimmer() {
     for (w in listOf(1f, 0.85f, 0.55f)) {
       Box(Modifier.fillMaxWidth(w).height(12.dp).clip(RoundedCornerShape(6.dp)).background(brush))
     }
-    Text("Thinking…", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
   }
 }
 
@@ -370,7 +374,7 @@ private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () 
       is Markdown.Block.Table -> TableBlock(b, colors)
       Markdown.Block.Rule -> androidx.compose.material3.HorizontalDivider(color = scheme.outlineVariant)
       is Markdown.Block.Figure -> {
-        val k = "${line.id}|${b.n}"
+        val k = "${chat?.chatId}|${line.id}|${b.n}"
         val live = chat?.figStates?.get(k)
         val saved = remember(k, line.done, line.text) { chat?.figState(line, b.n, b.query) }
         val st = live ?: saved

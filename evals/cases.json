@@ -1,0 +1,125 @@
+{
+  "_note": "Test bench cases. Key points are DRAFTS written by Claude: a teacher should check and correct them. 'any' lists are alternative words that show the point is present (rough automatic check; every answer is also read by hand). 'wrong' lists words that signal a known wrong answer. 'search_terms' are words a sensible web search for this case would contain.",
+  "pages": {
+    "chem_clean": "pages/chem_clean.png",
+    "chem_scan": "pages/chem_textbook_scan.png",
+    "electrolysis_small": "pages/electrolysis_small.png"
+  },
+  "cases": [
+    {
+      "id": "clean_ka", "page": "chem_clean", "ask": "answer only question (ক)", "only_part": "ক",
+      "points": [
+        {"point": "uses electricity / electrolysis", "any": ["তড়িৎ", "বিদ্যুৎ", "electroly"]},
+        {"point": "a thin layer of one metal is coated on another", "any": ["প্রলেপ", "আবরণ", "স্তর", "coating", "layer"]},
+        {"point": "purpose: protection from corrosion or better look", "any": ["ক্ষয়", "মরিচা", "সৌন্দর্য", "উজ্জ্বল", "corrosion", "rust"]}
+      ],
+      "search_terms": ["electroplating", "ইলেকট্রোপ্লেটিং"]
+    },
+    {
+      "id": "clean_kha", "page": "chem_clean", "ask": "answer only question (খ)", "only_part": "খ",
+      "points": [
+        {"point": "completes the electric circuit", "any": ["বর্তনী", "সার্কিট", "circuit"]},
+        {"point": "keeps both solutions electrically neutral / balances charge", "any": ["নিস্তড়িৎ", "নিরপেক্ষ", "আধান", "চার্জ", "ভারসাম্য", "neutral"]},
+        {"point": "ions (not electrons) move through it", "any": ["আয়ন", "ion"]},
+        {"point": "keeps the two solutions from mixing", "any": ["মিশ", "mix"]}
+      ],
+      "search_terms": ["salt bridge", "লবণ সেতু"]
+    },
+    {
+      "id": "clean_ga", "page": "chem_clean", "ask": "answer only question (গ)", "only_part": "গ",
+      "points": [
+        {"point": "it is a nuclear reaction: the nucleus changes", "any": ["নিউক্লিয়", "নিউক্লিয়াস", "nuclear", "nucleus"]},
+        {"point": "the uranium nucleus splits (fission)", "any": ["ফিশন", "বিভাজন", "নিউক্লিয়াস ভেঙে", "নিউক্লিয়াস বিভক্ত", "fission", "split"]},
+        {"point": "new elements form (barium, krypton)", "any": ["নতুন মৌল", "বেরিয়াম", "ক্রিপটন", "Ba", "Kr", "new element"]},
+        {"point": "a chemical reaction only changes electrons/bonds; elements stay the same", "any": ["ইলেকট্রন", "বন্ধন", "electron", "bond"]}
+      ],
+      "wrong": ["ZnCl", "জিংক", "তড়িৎ বিশ্লেষণ", "electrolysis", "থার্মোডাইনামিক"],
+      "junk": ["ssBa", "seBa", "s6Ba", "sekr", "skr", "on'", "2580", "23500"],
+      "search_terms": ["uranium", "fission", "nuclear", "ইউরেনিয়াম", "ফিশন", "নিউক্লিয়", "barium", "krypton"]
+    },
+    {
+      "id": "clean_gha", "page": "chem_clean", "ask": "answer only question (ঘ)", "only_part": "ঘ",
+      "points": [
+        {"point": "both reactions release energy (exothermic)", "any": ["তাপোৎপাদী", "শক্তি উৎপন্ন", "শক্তি নির্গত", "exothermic"]},
+        {"point": "(i) is combustion of petroleum", "any": ["দহন", "combustion", "জ্বলন"]},
+        {"point": "(iii) is a displacement / redox reaction", "any": ["প্রতিস্থাপন", "রেডক্স", "জারণ", "displacement", "redox"]},
+        {"point": "says which gives more energy and why", "any": ["বেশি", "অধিক", "more"]}
+      ],
+      "wrong": ["Penrolium", "products"],
+      "search_terms": ["combustion", "petroleum", "displacement", "zinc", "copper", "দহন"]
+    },
+    {
+      "id": "clean_ga_bengali_ask", "page": "chem_clean", "ask": "গ নং প্রশ্নের উত্তর দাও", "only_part": "গ",
+      "same_points_as": "clean_ga"
+    },
+    {
+      "id": "clean_ga_english_ask", "page": "chem_clean", "ask": "solve part c", "only_part": "গ",
+      "same_points_as": "clean_ga"
+    },
+    {
+      "id": "clean_ga_no_web", "page": "chem_clean", "ask": "answer only question (গ)", "only_part": "গ", "web": false,
+      "same_points_as": "clean_ga"
+    },
+    {
+      "id": "scan_ga", "page": "chem_scan", "ask": "answer only question (গ)", "only_part": "গ",
+      "same_points_as": "clean_ga"
+    },
+    {
+      "id": "scan_gha", "page": "chem_scan", "ask": "answer only question (ঘ)", "only_part": "ঘ",
+      "same_points_as": "clean_gha"
+    },
+    {
+      "id": "scan_all", "page": "chem_scan", "ask": "সবগুলো প্রশ্নের উত্তর দাও",
+      "points": [
+        {"point": "(ক) electroplating: metal coating by electricity", "any": ["প্রলেপ", "আবরণ", "coating"]},
+        {"point": "(খ) salt bridge: ions, circuit, neutrality", "any": ["আয়ন", "ion"]},
+        {"point": "(গ) nuclear reaction", "any": ["নিউক্লিয়", "nuclear"]},
+        {"point": "(ঘ) both release energy, compared", "any": ["দহন", "combustion", "তুলনা"]},
+        {"point": "all four parts present", "all": ["(ক)", "(খ)", "(গ)", "(ঘ)"]}
+      ],
+      "wrong": ["ZnCl₂ + Cu দ্বিতীয়"]
+    },
+    {
+      "id": "small_q1", "page": "electrolysis_small", "ask": "১ নং প্রশ্নের উত্তর দাও",
+      "points": [
+        {"point": "pure water barely ionizes, so it conducts very little", "any": ["বিশুদ্ধ পানি", "বিশুদ্ধ জল", "pure water", "সামান্য"]},
+        {"point": "the acid gives free ions in water", "any": ["আয়ন", "ion", "H⁺", "H+"]},
+        {"point": "these ions carry the current", "any": ["পরিবহন", "conduct", "প্রবাহ"]}
+      ],
+      "search_terms": ["acid", "water", "electrolyte", "conduct", "এসিড", "পানি"]
+    },
+    {
+      "id": "small_q2", "page": "electrolysis_small", "ask": "answer question 2",
+      "points": [
+        {"point": "copper sulphate ionizes completely in water", "any": ["সম্পূর্ণ", "পুরোপুরি", "complete", "fully"]},
+        {"point": "gives Cu²⁺ and SO₄²⁻ ions", "any": ["Cu²⁺", "Cu2+", "SO₄", "SO4", "কপার আয়ন", "সালফেট আয়ন"]},
+        {"point": "states what a strong electrolyte is", "any": ["তীব্র তড়িৎ বিশ্লেষ্য", "strong electrolyte"]}
+      ],
+      "search_terms": ["copper sulphate", "copper sulfate", "strong electrolyte", "কপার সালফেট"]
+    },
+    {
+      "id": "typed_nuclear_vs_chemical", "ask": "পারমাণবিক বিক্রিয়া ও রাসায়নিক বিক্রিয়ার মধ্যে পার্থক্য কী?",
+      "points": [
+        {"point": "nuclear changes the nucleus; chemical changes electrons/bonds", "any": ["নিউক্লিয়াস", "nucleus"]},
+        {"point": "nuclear can form new elements; chemical keeps the same elements", "any": ["নতুন মৌল", "মৌল", "element"]},
+        {"point": "nuclear releases far more energy", "any": ["বেশি শক্তি", "বিপুল", "অনেক বেশি", "far more"]}
+      ]
+    },
+    {
+      "id": "typed_salt_bridge_en", "ask": "Why does a salt bridge carry ions and not electrons?",
+      "points": [
+        {"point": "electrons flow through the outer wire", "any": ["wire", "external circuit", "তার"]},
+        {"point": "solutions/salt bridge conduct by moving ions", "any": ["ion"]},
+        {"point": "ion flow keeps each half-cell neutral", "any": ["neutral", "balance", "charge"]}
+      ]
+    },
+    {
+      "id": "typed_web_explicit", "ask": "Search the web: who won the most recent Ballon d Or award?", "must_search": true,
+      "points": [], "manual_fact_check": true
+    },
+    {
+      "id": "typed_web_implicit", "ask": "বাংলাদেশের বর্তমান অর্থমন্ত্রী কে?", "must_search": true,
+      "points": [], "manual_fact_check": true
+    }
+  ]
+}

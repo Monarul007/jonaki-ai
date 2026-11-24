@@ -138,7 +138,7 @@ fun Composer(
         Modifier.fillMaxWidth().padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 10.dp),
         verticalAlignment = Alignment.Bottom,
       ) {
-        IconButton(onClick = { onSheet(true) }, modifier = Modifier.size(56.dp), enabled = !chat.busy) {
+        IconButton(onClick = { onSheet(true) }, modifier = Modifier.size(56.dp), enabled = !chat.busyHere) {
           Icon(Icons.Rounded.Add, "Add photo or file")
         }
         Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh, modifier = Modifier.weight(1f)) {
@@ -146,7 +146,16 @@ fun Composer(
             value = text,
             onValueChange = onText,
             modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-            placeholder = { Text(if (chat.ready) "Ask Jonaki AI anything" else "Jonaki AI is waking up…") },
+            placeholder = {
+              Text(
+                when {
+                  !chat.ready -> "Jonaki AI is waking up…"
+                  // The model is busy: a new question waits for its turn in the queue.
+                  chat.busy && !chat.busyHere -> "Answering in another chat… yours will wait its turn"
+                  else -> "Ask Jonaki AI anything"
+                },
+              )
+            },
             maxLines = 5,
             colors = TextFieldDefaults.colors(
               focusedContainerColor = Color.Transparent,
@@ -161,7 +170,13 @@ fun Composer(
         }
         Spacer(Modifier.size(8.dp))
         when {
-          chat.busy -> FilledIconButton(
+          // This chat's question is waiting for its turn: the button cancels it.
+          chat.waitingHere && !chat.busyHere && text.isBlank() -> FilledIconButton(
+            onClick = { chat.cancelWaitingHere() },
+            modifier = Modifier.size(56.dp),
+            colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
+          ) { Icon(Icons.Rounded.Stop, "Cancel the waiting question") }
+          chat.busyHere && text.isBlank() && chat.draft.isEmpty() -> FilledIconButton(
             onClick = { chat.stop() },
             modifier = Modifier.size(56.dp),
             colors = IconButtonDefaults.filledIconButtonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
@@ -173,7 +188,7 @@ fun Composer(
           ) { Icon(Icons.Rounded.GraphicEq, "Talk mode: speak with Jonaki AI") }
           else -> FilledIconButton(
             onClick = onSend,
-            enabled = chat.ready && !chat.importing,
+            enabled = chat.canAsk(),
             modifier = Modifier.size(56.dp),
           ) { Icon(Icons.AutoMirrored.Rounded.Send, "Send") }
         }

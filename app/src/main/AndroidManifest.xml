@@ -43,6 +43,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync|shortService" />
 
+        <!-- Keeps an answer (and the loaded model) running while the app is in the background. -->
+        <service
+            android:name=".AnswerService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

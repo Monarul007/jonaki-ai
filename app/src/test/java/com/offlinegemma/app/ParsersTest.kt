@@ -177,6 +177,12 @@ class BengaliTextTest {
     assertFalse(s.contains("明显"))
     assertFalse(s.contains("したがって"))
   }
+
+  // Bengali's full stops live in the Devanagari block; dropping them ran every sentence together.
+  @Test fun keepsBengaliFullStopsButDropsHindi() {
+    val s = keepBengali("এটি সত্য। এটিও॥ नमस्ते")
+    assertEquals("এটি সত্য। এটিও॥ ", s)
+  }
 }
 
 class VerifierTest {
@@ -188,7 +194,8 @@ class VerifierTest {
   @Test fun flagsMissingAndUncitedSources() {
     assertEquals(AnswerProblem.NO_SOURCES, verifyAnswer("Some answer", emptyList(), true, false, true).problem)
     val s = listOf(Source("Dhaka news today", "https://example.com/news"))
-    assertEquals(AnswerProblem.NOT_CITED, verifyAnswer("Some answer", s, true, false, true).problem)
+    // Sources are listed under the answer by the app; an uncited answer is not sent back for a rewrite.
+    assertEquals(AnswerProblem.OK, verifyAnswer("Some answer", s, true, false, true).problem)
     assertEquals(AnswerProblem.OK, verifyAnswer("Source: https://example.com/news — the news.", s, true, false, true).problem)
   }
 

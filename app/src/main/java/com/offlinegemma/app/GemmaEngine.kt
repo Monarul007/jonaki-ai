@@ -69,8 +69,20 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
         modelPath = modelFile.path, backend = Backend.CPU(), maxNumTokens = maxTokens, cacheDir = cache,
       ),
     )
+    // Phones under the recommended memory: the audio part plus an image answer did not fit (a 4 GB
+    // phone was closed for LOW_MEMORY while answering about a photo). There, keep pictures and leave
+    // audio out; voice still works through the phone's own speech recognition.
+    val lowRam = ModelInfo.totalRamBytes(context) < ModelInfo.MIN_RAM_BYTES
+    val tried = if (lowRam) {
+      listOf(
+        "GPU + image" to EngineConfig(
+          modelPath = modelFile.path, backend = Backend.GPU(), visionBackend = Backend.GPU(),
+          maxNumTokens = maxTokens, cacheDir = cache,
+        ),
+      ) + attempts.filter { "audio" !in it.first }
+    } else attempts
     // Try the mode that worked last time first, so a phone doesn't re-try failing modes every launch.
-    val ordered = attempts.sortedByDescending { it.first == prefs.lastMode }
+    val ordered = tried.sortedByDescending { it.first == prefs.lastMode }
     var lastError: Throwable? = null
     for ((name, config) in ordered) {
       val candidate = Engine(config)
