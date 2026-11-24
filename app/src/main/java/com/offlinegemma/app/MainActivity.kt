@@ -84,6 +84,11 @@ class MainActivity : ComponentActivity() {
     if ((applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) == 0 || intent == null) return
     val app = application as App
     intent.getStringExtra("test_demo")?.let { app.chat.injectTest(it) }
+    // SPIKE: `--ez adk true` runs the agent loop through ADK (LiteRT-LM native tool calling).
+    if (intent.hasExtra("adk")) {
+      AdkAgent.enabled = intent.getBooleanExtra("adk", false)
+      android.util.Log.i("AdkAgent", "enabled=${AdkAgent.enabled}")
+    }
     // Perfect-reading test: `--es ocr_override /sdcard/Download/page.txt` (empty value = off).
     intent.getStringExtra("ocr_override")?.let { src ->
       Ocr.overrideText = if (src.isBlank()) null else runCatching { java.io.File(src).readText() }

@@ -404,9 +404,39 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val usedOcr = ocrText.isNotBlank()
         // A Bengali question must get a Bengali answer; the model sometimes mixes in Tamil/Hindi.
         val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
+        // SPIKE: ADK runs the first answer's tool loop with LiteRT-LM native tool calling.
+        val viaAdk = agent && AdkAgent.enabled && images.isEmpty() && audio.isEmpty()
         while (true) {
           var out = ""
-          try {
+          if (viaAdk && first) {
+            first = false
+            val adkPrompt = text // our tool rules are not needed: the tools go to the engine natively
+            val t0 = System.currentTimeMillis()
+            out = runCatching {
+              gemma.withEngine { engine ->
+                kotlinx.coroutines.withTimeout(FIRST_TIMEOUT_MS) {
+                  AdkAgent.answer(
+                    engine, GemmaEngine.SYSTEM, adkPrompt,
+                    runTool = { c -> runTool(answerId, c, topic ?: display, found) },
+                    onText = { s ->
+                      val safe = if (bengaliAnswer) keepBengali(s) else s
+                      update(answerId) { it.copy(text = safe) }
+                      onAnswerText?.invoke(answerId, safe)
+                    },
+                  )
+                }
+              }.orEmpty()
+            }.onFailure { Log.w("AdkAgent", "ADK answer failed", it) }.getOrDefault("")
+            Log.i("AdkAgent", "answer ${out.length} chars in ${System.currentTimeMillis() - t0}ms")
+            resetChat = true // ADK's conversation replaced ours; rebuild the chat at the end
+            if (out.isNotBlank()) {
+              val safe = if (bengaliAnswer) keepBengali(out) else out
+              update(answerId) { it.copy(text = safe) }
+              out = safe
+            }
+            // Later rounds (review, verification) use our plain loop without the text protocol.
+            gemma.startChat(emptyList(), "")
+          } else try {
             val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList())
               .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
             val limit = if (rewriting) ROUND_TIMEOUT_MS else FIRST_TIMEOUT_MS
@@ -429,7 +459,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             break
           }
           first = false
-          if (agent) {
+          if (agent && !viaAdk) {
             val calls = Tools.parseCalls(out)
             if (calls.isNotEmpty() && turn < MAX_TOOL_TURNS) {
               turn++
@@ -511,7 +541,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             prompt = "Page text:\n${ocrText.take(if (research.isNotBlank()) 1200 else 1500)}\n\n" +
               (if (research.isNotBlank()) "Web results:\n${research.take(1500)}\n\n" else "") +
               "Your previous answer:\n$prev\n\n" + reviewRule(research.isNotBlank())
-            if (agent) prompt = "(${Tools.PROMPT})\n\n$prompt"
+            if (agent && !viaAdk) prompt = "(${Tools.PROMPT})\n\n$prompt"
             continue
           }
           // Bounded confidence loop: every part answered, no uncertainty, sources present for a

@@ -148,6 +148,19 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     }
   }
 
+  /**
+   * SPIKE: lends the raw engine to another conversation owner (ADK). Our open chat is closed first,
+   * because the engine holds one conversation at a time; callers rebuild it afterwards.
+   */
+  suspend fun <T> withEngine(block: suspend (Engine) -> T): T? = lock.withLock {
+    val e = engine ?: return@withLock null
+    withContext(Dispatchers.IO) {
+      runCatching { conversation?.close() }
+      conversation = null
+    }
+    block(e)
+  }
+
   /** "Stop" button. */
   fun stop() {
     runCatching { conversation?.cancelProcess() }

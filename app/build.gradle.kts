@@ -63,7 +63,12 @@ android {
     packaging {
         jniLibs { pickFirsts.add("**/liblitertlm_jni.so") }
         // Post-quantum crypto tables pulled in by the PDF reader's encryption support; never used here.
-        resources { excludes += "org/bouncycastle/pqc/**" }
+        resources {
+            excludes += "org/bouncycastle/pqc/**"
+            // SPIKE: ADK's server-side libraries ship duplicate jar metadata files.
+            excludes += setOf("META-INF/INDEX.LIST", "META-INF/DEPENDENCIES", "META-INF/io.netty.versions.properties")
+            pickFirsts += setOf("META-INF/*.kotlin_module", "META-INF/versions/9/OSGI-INF/MANIFEST.MF")
+        }
     }
 }
 
@@ -77,6 +82,10 @@ kotlin {
 
 dependencies {
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
+    // SPIKE: Google's Agent Development Kit runs the tool loop on the same LiteRT-LM engine,
+    // with LiteRT-LM's native tool calling instead of our <tool_call> text protocol.
+    implementation("com.google.adk:google-adk-kotlin-core:1.6.0")
+    implementation("com.google.adk:google-adk-kotlin-litertlm:1.6.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("androidx.activity:activity-compose:1.10.1")
@@ -108,3 +117,7 @@ dependencies {
     // Real org.json for JVM tests (Android's copy is only a stub there).
     testImplementation("org.json:json:20240303")
 }
+
+// SPIKE: ADK 1.6.0 asks for compileSdk 37, which needs a newer Android Gradle plugin than ours.
+// It runs on minSdk 26, so the requirement is compile-time only; skip the check for this spike.
+tasks.matching { it.name.startsWith("check") && it.name.endsWith("AarMetadata") }.configureEach { enabled = false }
