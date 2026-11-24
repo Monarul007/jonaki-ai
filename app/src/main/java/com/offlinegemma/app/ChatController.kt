@@ -491,6 +491,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // A photographed page is a study question the small model often gets confidently wrong,
         // and it rarely chooses to search by itself. So the app always looks it up first. The
         // trigger is the modality (a page read by OCR), not any word in it; the model writes the query.
+        pageFocus = ""
         val research = if (ocrText.isNotBlank() && prefs.webSearch && Tools.online(app)) {
           researchPage(answerId, ocrText, modelText, topic ?: display, found)
         } else ""
@@ -505,7 +506,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               append("the text reading may have got wrong, such as printed numbering; for small print the ")
               append("text reading is usually more reliable.]\n")
             }
-            append(ocrText)
+            // Only the lines the question is about, when the research step found them: a smaller
+            // prompt answers faster and stays in one language.
+            val focus = pageFocus.takeIf { it.isNotBlank() && it.length < ocrText.length }
+            if (focus != null) append("(Only the page lines the question is about are shown.)\n").append(focus)
+            else append(ocrText)
             if (research.isNotBlank()) {
               append("\n\n[Web results for checking the facts. Where they disagree with your memory, ")
               append("trust them. Name the source you used.]\n")
@@ -978,6 +983,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
    * the user asked, the app searches and reads the top result. Returns the evidence text ("" when
    * nothing usable came back). Shown as tool chips like any other tool call.
    */
+  /** The page lines the research step found the question to be about ("" = use the whole page). */
+  private var pageFocus = ""
+
   private suspend fun researchPage(
     answerId: Long, page: String, ask: String, question: String, found: MutableList<Source>,
   ): String {
@@ -988,12 +996,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val about = runCatching {
       gemma.oneShot(
         "Page text (each line tagged with its position):\n${page.take(1500)}\n\nMy instruction: ${ask.take(300)}\n\n" +
-          "Copy, word for word, the page lines that hold what my instruction's question is about, " +
-          "including any lines the question points to by number or position. Reply with those lines only.",
+          "Copy, word for word, the question my instruction asks about and the page lines it refers " +
+          "to (by number or position). Reply with those lines only, each with its [Line N] tag.",
         160,
       ).trim()
     }.getOrDefault("")
     Log.i("ChatController", "page research about='${about.take(200)}'")
+    pageFocus = about
     status = "Planning what to look up…"
     val raw = runCatching {
       gemma.oneShot(
@@ -1025,10 +1034,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val usablePage = pageText.isNotBlank() && !pageText.startsWith("Error") &&
       !pageText.startsWith("The page came back almost empty")
     return buildString {
-      // Tell the answer step which page lines the question is about.
-      if (about.isNotBlank()) append("The question is about these page lines:\n").append(about.take(800)).append("\n\n")
-      append("Tool result for web_search:\n").append(results.take(1000))
-      if (usablePage) append("\n\nTool result for web_fetch (${top?.url}):\n").append(pageText.take(1400))
+      // Short on purpose: photo + whole page + long web results filled a 4096-token window, and the
+      // model slowed to the time limit and drifted into other languages.
+      append("Tool result for web_search:\n").append(results.take(600))
+      if (usablePage) append("\n\nTool result for web_fetch (${top?.url}):\n").append(pageText.take(700))
     }
   }
 
