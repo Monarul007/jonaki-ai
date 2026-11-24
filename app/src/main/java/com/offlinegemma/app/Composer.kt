@@ -53,9 +53,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -76,8 +79,13 @@ fun Composer(
   onCamera: () -> Unit,
   sheetOpen: Boolean,
   onSheet: (Boolean) -> Unit,
+  focusRequest: Int = 0,
 ) {
   val context = LocalContext.current
+  val focus = remember { FocusRequester() }
+  LaunchedEffect(focusRequest) {
+    if (focusRequest > 0) runCatching { focus.requestFocus() }
+  }
 
   val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(4)) { uris ->
     uris.forEach { chat.addImage(it) }
@@ -145,7 +153,7 @@ fun Composer(
           TextField(
             value = text,
             onValueChange = onText,
-            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+            modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp).focusRequester(focus),
             placeholder = {
               Text(
                 when {

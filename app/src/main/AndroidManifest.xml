@@ -25,7 +25,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:theme="@style/Theme.OfflineGemma"
         android:largeHeap="true"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:hasFragileUserData="true">
 
         <!-- Lets LiteRT-LM use the phone's GPU (graphics chip). Optional, so phones without it still install. -->
         <uses-native-library android:name="libvndksupport.so" android:required="false" />

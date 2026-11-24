@@ -102,6 +102,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   var sheet by rememberSaveable { mutableStateOf(false) }
   var viewing by remember { mutableStateOf<ViewItem?>(null) }
   var cameraOpen by rememberSaveable { mutableStateOf(false) }
+  var focusComposer by remember { mutableStateOf(0) }
   // Once a second while a background step runs, so "Checking…" never looks frozen.
   var clock by remember { mutableStateOf(System.currentTimeMillis()) }
   LaunchedEffect(chat.status) {
@@ -170,7 +171,12 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
           },
           title = {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-              Text(chat.title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+              Text(
+                if (chat.lines.isEmpty()) "Jonaki AI" else chat.title,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = MaterialTheme.typography.titleMedium,
+              )
               // Work running in another chat: say where, so the spinner is not mistaken for this chat.
               val elsewhere = chat.busy && !chat.busyHere
               val sub = (if (elsewhere) "Answering in “${chat.runningTitle}”" else chat.status) ?: when {
@@ -221,20 +227,23 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
           onCamera = { cameraOpen = true },
           sheetOpen = sheet,
           onSheet = { sheet = it },
+          focusRequest = focusComposer,
         )
       },
     ) { pad ->
       Box(Modifier.fillMaxSize().padding(pad)) {
         when {
           chat.loadError != null -> LoadError(chat.loadError!!, onRetry = { chat.loadModel() })
-          chat.lines.isEmpty() -> EmptyState(loading = !chat.ready, onPrompt = { i ->
-            when (i) {
-              0 -> { input = "Solve it"; sheet = true }
-              1 -> input = "Explain black holes with a demo"
-              2 -> onTalk()
-              else -> input = "How does photosynthesis work?"
-            }
-          })
+          chat.lines.isEmpty() -> HomeScreen(
+            chat = chat,
+            loading = !chat.ready,
+            onTalk = onTalk,
+            onCamera = { cameraOpen = true },
+            onAttach = { sheet = true },
+            onOpenChat = { chat.openChat(it) },
+            onOpenChats = { scope.launch { drawer.open() } },
+            onStarter = { prompt -> input = prompt; focusComposer++ },
+          )
           else -> {
             LazyColumn(
               state = listState,
@@ -380,63 +389,6 @@ private fun NoticeLine(text: String) {
     color = MaterialTheme.colorScheme.onSurfaceVariant,
     textAlign = TextAlign.Center,
   )
-}
-
-private val EXAMPLES = listOf(
-  "📷" to "Paste a screenshot and say “solve it”",
-  "🪐" to "Explain black holes with a demo",
-  "🎙️" to "Talk to me",
-  "🌱" to "How does photosynthesis work?",
-)
-
-@Composable
-private fun EmptyState(loading: Boolean, onPrompt: (Int) -> Unit) {
-  Column(Modifier.fillMaxSize().verticalScroll(androidx.compose.foundation.rememberScrollState())) {
-  Column(
-    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 16.dp),
-    horizontalAlignment = Alignment.CenterHorizontally,
-    verticalArrangement = Arrangement.Center,
-  ) {
-    Spacer(Modifier.height(40.dp))
-    BrandMark(96.dp)
-    Spacer(Modifier.height(16.dp))
-    Text(if (loading) "Waking up Jonaki AI…" else "How can I help?", style = MaterialTheme.typography.headlineMedium)
-    Spacer(Modifier.height(8.dp))
-    Text(
-      if (loading) "Loading the model into memory. The first time can take up to two minutes."
-      else "Everything stays on this phone. Ask anything, add a photo, or tap the mic to talk.",
-      style = MaterialTheme.typography.bodyMedium,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-      textAlign = TextAlign.Center,
-    )
-    if (loading) {
-      Spacer(Modifier.height(20.dp))
-      CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
-    }
-    Spacer(Modifier.height(28.dp))
-  }
-  // Example prompts as cards in one row that scrolls sideways (edge to edge).
-  androidx.compose.foundation.lazy.LazyRow(
-    contentPadding = PaddingValues(horizontal = 20.dp),
-    horizontalArrangement = Arrangement.spacedBy(12.dp),
-    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp).semantics { contentDescription = "Example prompts" },
-  ) {
-    items(EXAMPLES.size) { i ->
-      val (emoji, text) = EXAMPLES[i]
-      Surface(
-        onClick = { onPrompt(i) },
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainerLow,
-        modifier = Modifier.width(200.dp).heightIn(min = 112.dp),
-      ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-          Text(emoji, style = MaterialTheme.typography.headlineSmall)
-          Text(text, style = MaterialTheme.typography.bodyLarge, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        }
-      }
-    }
-  }
-  }
 }
 
 @Composable

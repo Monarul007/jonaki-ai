@@ -7,14 +7,18 @@ import kotlin.math.sqrt
  * "Is someone talking?" — the sound rules of talk mode, kept free of Android so they can be tested.
  * Same numbers as chat.html onTalkAudio / finishUtterance:
  * threshold = max(0.012, room noise x 3); about 0.35 s kept from before speech starts;
- * the clip ends after 1.2 s of quiet or at 30 s; clips with under 0.3 s of voice are ignored;
- * talking over the reply (louder than threshold x 3 and the echo, for ~0.35 s of a 0.5 s window) interrupts it.
+ * the clip ends after 2.5 s of quiet or at 30 s; clips with under 0.3 s of voice are ignored.
+ * Barge-in detection exists, but talk mode disables it: only a tap on the orb stops a reply.
  */
 class VoiceDetector(
   private val rate: Int = 16000,
   private val preFrames: Int = 11,
+  /** A natural pause must be long enough that the user has really finished the thought. */
+  private val endSilenceMs: Int = 2500,
   /** How far above the learned echo the user must be to interrupt (loudspeaker only). */
   var echoMargin: Double = 2.5,
+  /** Talk mode turns this off: only an orb tap may interrupt a reply. */
+  var bargeInEnabled: Boolean = true,
 ) {
 
   enum class Mode { LISTENING, RECORDING, SPEAKING, THINKING }
@@ -73,7 +77,7 @@ class VoiceDetector(
       Mode.RECORDING -> {
         rec.add(x)
         if (r > th) { quietAt = now; voicedMs += ms }
-        if (now - quietAt > 1200 || now - startAt > 30_000) {
+        if (now - quietAt > endSilenceMs || now - startAt > 30_000) {
           val chunks = rec.toList()
           rec.clear()
           if (voicedMs < 300) Event.Discard else Event.Finish(chunks)
@@ -87,6 +91,7 @@ class VoiceDetector(
         val learning = speaking && speakingFor < 600
         if (speaking && (learning || r <= bar)) echo = echo * 0.9 + r * 0.1
         lastBar = bar
+        if (!bargeInEnabled) return Event.None
         // Speech has small gaps between words, so count loud frames in a ~0.5 s window
         // instead of asking for 0.35 s without a single quiet frame.
         loud.addLast(speaking && !learning && r > bar)

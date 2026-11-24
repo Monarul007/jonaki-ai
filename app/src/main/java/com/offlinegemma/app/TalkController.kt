@@ -36,8 +36,8 @@ class TalkController(private val context: Context, private val chat: ChatControl
   var state by mutableStateOf(State.OFF); private set
   /** Microphone loudness 0..1, for the animated orb. */
   var level by mutableFloatStateOf(0f); private set
-  /** Shown under the orb: what Gemma is saying. */
-  var caption by mutableStateOf(""); private set
+  /** The reply as it streams, for the transcript on screen. */
+  var transcript by mutableStateOf(""); private set
   var error by mutableStateOf<String?>(null); private set
 
   private val main = Handler(Looper.getMainLooper())
@@ -48,7 +48,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
   /** How loud our own voice comes back through the microphone while speaking (loudspeaker echo). */
   private var answerId: Long? = null
   private val vad = VoiceDetector(RATE, PRE_FRAMES)
-  /** Headphones on: no loudspeaker echo, so interrupting needs no extra margin. */
+  /** Headphones on: no loudspeaker echo (the detector's echo learning uses this). */
   private var loudspeakerSafe = false
 
   // Timing, to compare with the PC (full loop ~15 s, interruption ~1 s).
@@ -58,18 +58,19 @@ class TalkController(private val context: Context, private val chat: ChatControl
     chat.onAnswerStart = { id, voice ->
       if (running && voice) {
         answerId = id
-        caption = ""
+        transcript = ""
         speaker.start(id)
       }
     }
     chat.onAnswerText = { id, text ->
       if (running && id == answerId) {
         speaker.feed(text)
-        caption = speakable(text).trim().takeLast(220)
+        transcript = speakable(text).trim()
       }
     }
     chat.onAnswerDone = { line ->
       if (running && line.id == answerId) {
+        transcript = speakable(line.text).trim()
         speaker.end(line.text)
         answerId = null
         if (!speaker.speaking && st != State.RECORDING) moveTo(State.LISTENING)
@@ -137,7 +138,9 @@ class TalkController(private val context: Context, private val chat: ChatControl
 
     running = true
     loudspeakerSafe = headphones()
-    headphonesOn = loudspeakerSafe
+    transcript = ""
+    // Only the orb may interrupt a reply; the microphone never stops the answer.
+    vad.bargeInEnabled = false
     vad.reset()
     moveTo(if (chat.busy) State.THINKING else State.LISTENING)
     thread = Thread({
@@ -160,9 +163,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
     }, "talk-mic").apply { start() }
   }
 
-  /** On a loudspeaker the phone can't tell your voice from its own, so tapping the orb interrupts. */
-  var headphonesOn by mutableStateOf(false); private set
-
+  /** Only an orb tap can interrupt a reply; the microphone never stops it. */
   /** Tap to interrupt: stop speaking (and the answer), then listen. */
   fun interrupt() {
     if (!running || (st != State.SPEAKING && st != State.THINKING)) return
@@ -179,7 +180,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
     thread = null
     speaker.stop()
     answerId = null
-    caption = ""
+    transcript = ""
     level = 0f
     moveTo(State.OFF)
   }
@@ -202,12 +203,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
       VoiceDetector.Event.Discard -> moveTo(State.LISTENING)
       is VoiceDetector.Event.Finish -> finishUtterance(e.chunks)
       VoiceDetector.Event.BargeIn -> {
-        Log.i(TAG, "Barge-in: rms=%.3f echo=%.3f".format(r, vad.echo))
-        main.post {
-          speaker.stop()
-          if (chat.busy) chat.stop()
-        }
-        moveTo(State.RECORDING)
+        // Only a tap on the orb may interrupt a reply; ignore speech picked up over it.
       }
       VoiceDetector.Event.None -> {}
     }

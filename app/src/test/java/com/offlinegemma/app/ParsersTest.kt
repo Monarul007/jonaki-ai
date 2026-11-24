@@ -232,16 +232,27 @@ class VoiceTest {
     v.run(0.003, 20, 0, VoiceDetector.Mode.LISTENING)
     assertEquals(VoiceDetector.Event.Start, v.feed(frame(0.1), 1000, VoiceDetector.Mode.LISTENING))
     v.run(0.1, 30, 1032, VoiceDetector.Mode.RECORDING) // ~1 s of talking
-    val after = v.run(0.002, 45, 2000, VoiceDetector.Mode.RECORDING) // 1.4 s of quiet
+    val after = v.run(0.002, 85, 2000, VoiceDetector.Mode.RECORDING) // 2.7 s of quiet
     val finish = after.filterIsInstance<VoiceDetector.Event.Finish>().first()
     assertTrue(finish.chunks.size > 30) // includes the pre-roll from before speech
+  }
+
+  @Test fun aNaturalPauseDoesNotEndTheClip() {
+    val v = VoiceDetector()
+    v.run(0.003, 20, 0, VoiceDetector.Mode.LISTENING)
+    assertEquals(VoiceDetector.Event.Start, v.feed(frame(0.1), 1000, VoiceDetector.Mode.LISTENING))
+    v.run(0.1, 30, 1032, VoiceDetector.Mode.RECORDING)
+    val pause = v.run(0.002, 45, 2000, VoiceDetector.Mode.RECORDING) // 1.4 s pause
+    assertFalse(pause.any { it is VoiceDetector.Event.Finish })
+    val rest = v.run(0.002, 40, 3440, VoiceDetector.Mode.RECORDING)
+    assertTrue(rest.any { it is VoiceDetector.Event.Finish })
   }
 
   @Test fun coughIsIgnored() {
     val v = VoiceDetector()
     v.feed(frame(0.1), 0, VoiceDetector.Mode.LISTENING)
     v.feed(frame(0.1), 32, VoiceDetector.Mode.RECORDING) // 64 ms of sound
-    assertTrue(v.run(0.002, 45, 64, VoiceDetector.Mode.RECORDING).contains(VoiceDetector.Event.Discard))
+    assertTrue(v.run(0.002, 85, 64, VoiceDetector.Mode.RECORDING).contains(VoiceDetector.Event.Discard))
   }
 
   @Test fun ownEchoOnLoudspeakerDoesNotInterrupt() {

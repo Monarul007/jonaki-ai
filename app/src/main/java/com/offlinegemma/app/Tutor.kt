@@ -49,12 +49,58 @@ object Tutor {
     "Finish with a last line that starts with NEXT: followed by three short real questions about " +
       "this topic that the user might want to ask next, separated by | (write the actual questions)."
 
+  /** Talk mode is spoken: no pictures, no figure markers, no code or demos. */
+  private const val RULE_VOICE =
+    "This is a spoken conversation: answer briefly and naturally, in short sentences, in one " +
+      "language. Do not add [FIGURE: ...] markers, do not search for or offer pictures, diagrams, " +
+      "images or photos, and do not include code blocks or HTML demos."
+
+  /**
+   * Identity answers are facts, not model guesses. A 2B model otherwise calls itself a Google
+   * language model and drops the developer's site; the app answers these questions itself.
+   */
+  private val IDENTITY_RX = Regex(
+    "(?i)(who\\s+(created|made|developed|built|owns|is\\s+behind)\\s+(you|jonaki|this\\s+app))|" +
+      "((who|what)\\s+(are|is)\\s+you)|(who\\s+is\\s+jonaki)|(what\\s+is\\s+jonaki)|" +
+      "(who\\s+(is|are)\\s+(your|the)\\s+(creator|developer|maker|owner|founder))|" +
+      "((your|the)\\s+(creator|developer|maker|owner|founder))|" +
+      "(tell\\s+me\\s+about\\s+(yourself|jonaki|the\\s+developer|monarul))|" +
+      "(what\\s+model\\s+(do\\s+you\\s+use|are\\s+you))|(who\\s+trained\\s+you)|" +
+      "(are\\s+you\\s+(google|gemini|chatgpt|claude|openai|made\\s+by\\s+google))|" +
+      "(who\\s+is\\s+monarul)|(what'?s\\s+your\\s+name)|(what\\s+is\\s+your\\s+name)|" +
+      "(introduce\\s+yourself)|" +
+      "(তুমি\\s*কে|আপনি\\s*কে|তুই\\s*কে|" +
+      "তোমাকে\\s*কে\\s*(তৈরি|বানিয়েছে|বানাল)|আপনাকে\\s*কে\\s*(তৈরি|বানিয়েছে|বানাল)|" +
+      "কে\\s*(তৈরি|বানিয়েছে|বানাল)\\s*(করেছে|করেছেন)?|" +
+      "(তোমার|আপনার)\\s*(নির্মাতা|ডেভেলপার|ক্রিয়েটর|স্রষ্টা)|" +
+      "ডেভেলপার\\s*কে|জোনাকি\\s*কে|মনারুল\\s*কে|" +
+      "(তুমি|আপনি)\\s*কি\\s*(গুগল|জেমিনি|চ্যাটজিপিটি|ক্লড)|" +
+      "কোন\\s*মডেল|নিজের\\s*সম্পর্কে\\s*বলো)"
+  )
+
+  private const val IDENTITY_EN =
+    "I’m **Jonaki AI**, an offline AI assistant created and developed by **Monarul Islam " +
+      "(Monarul007)** — an AI enthusiast. I run entirely on your phone using Google’s **Gemma** " +
+      "model through **LiteRT-LM**, so your chats stay on your device. The app itself is made by " +
+      "Monarul Islam, not Google. Learn more about the developer at **https://monarul.pro.bd**."
+
+  private const val IDENTITY_BN =
+    "আমি **জোনাকি এআই (Jonaki AI)** — একটি অফলাইন এআই অ্যাসিস্ট্যান্ট। " +
+      "আমাকে তৈরি ও বিকশিত করেছেন **মনারুল ইসলাম (Monarul007)** — একজন এআই উৎসাহী। " +
+      "আমি আপনার ফোনেই Google-এর **Gemma** মডেল **LiteRT-LM**-এর মাধ্যমে চালাই, তাই আপনার " +
+      "চ্যাট ফোনেই থাকে। অ্যাপটি Google-এর নয় — এটি মনারুল ইসলামের তৈরি। ডেভেলপার সম্পর্কে " +
+      "আরও জানতে: **https://monarul.pro.bd**।"
+
+  fun identityAnswer(question: String, bengali: Boolean): String? =
+    if (IDENTITY_RX.containsMatchIn(question)) (if (bengali) IDENTITY_BN else IDENTITY_EN) else null
+
   /**
    * LiteRT-LM's system prompt is fixed for a whole chat, so the rules ride along
    * with this one message. Only the user's own words are shown on screen.
    */
-  fun wrap(userText: String, demos: Boolean, codeProblem: Boolean = false): String {
+  fun wrap(userText: String, demos: Boolean, codeProblem: Boolean = false, voice: Boolean = false): String {
     val rules = when {
+      voice -> listOf(RULE_ACCURATE, RULE_VOICE, RULE_NO_DEMO)
       codeProblem -> listOf(RULE_CODE)
       looksLikeTeaching(userText) -> listOf(RULE_ACCURATE, RULE_FIGURE, if (demos) RULE_DEMO else RULE_NO_DEMO, RULE_NEXT)
       else -> return userText

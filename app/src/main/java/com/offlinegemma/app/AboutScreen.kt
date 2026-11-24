@@ -62,6 +62,24 @@ fun AboutScreen(onBack: () -> Unit) {
       }
       SoftCard(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+          Text("Developer", style = MaterialTheme.typography.titleMedium)
+          Text(
+            "Jonaki AI is created and developed by Monarul Islam (Monarul007), an AI enthusiast. " +
+              "Learn more at monarul.pro.bd.",
+            style = MaterialTheme.typography.bodyMedium,
+          )
+          TextButton(
+            onClick = { runCatching { uri.openUri("https://github.com/Monarul007") } },
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+          ) { Text("GitHub") }
+          TextButton(
+            onClick = { runCatching { uri.openUri("https://monarul.pro.bd") } },
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+          ) { Text("monarul.pro.bd") }
+        }
+      }
+      SoftCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
           Text("Why “Jonaki”?", style = MaterialTheme.typography.titleMedium)
           Text(
             "Jonaki (জোনাকি) is Bengali for firefly. A firefly makes its own light in the dark — no power line, " +

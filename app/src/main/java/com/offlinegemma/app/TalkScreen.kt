@@ -15,7 +15,9 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,7 +27,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -39,6 +40,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -53,7 +55,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.offlinegemma.app.ui.Brand
 import kotlin.math.cos
@@ -67,11 +68,11 @@ private fun label(s: TalkController.State) = when (s) {
   TalkController.State.SPEAKING -> "Speaking…"
 }
 
-private fun hint(s: TalkController.State, headphones: Boolean) = when (s) {
+private fun hint(s: TalkController.State) = when (s) {
   TalkController.State.LISTENING -> "Just start talking"
-  TalkController.State.RECORDING -> "Pause when you're done"
+  TalkController.State.RECORDING -> "Speak freely — pause when you're done"
   TalkController.State.THINKING -> "Jonaki AI is working on a reply · tap the orb to stop"
-  TalkController.State.SPEAKING -> if (headphones) "Talk over Jonaki AI to interrupt" else "Tap the orb to interrupt"
+  TalkController.State.SPEAKING -> "Tap the orb to interrupt"
   TalkController.State.OFF -> ""
 }
 
@@ -94,18 +95,42 @@ fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
         Icon(Icons.Rounded.Headphones, null, tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
         Text(" Best with headphones", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
       }
-      Spacer(Modifier.weight(1f))
+      val scroll = rememberScrollState()
+      LaunchedEffect(talk.transcript) {
+        if (scroll.value >= scroll.maxValue - 32) scroll.scrollTo(scroll.maxValue)
+      }
+      Box(Modifier.weight(1f).fillMaxWidth().padding(top = 20.dp)) {
+        Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
+          talk.error?.let {
+            Text(
+              it,
+              style = MaterialTheme.typography.bodyLarge,
+              color = Color(0xFFFFB4AB),
+              textAlign = TextAlign.Start,
+              modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(12.dp))
+          }
+          Text(
+            talk.transcript,
+            style = MaterialTheme.typography.bodyLarge,
+            color = Color.White.copy(alpha = 0.82f),
+            textAlign = TextAlign.Start,
+            modifier = Modifier.fillMaxWidth(),
+          )
+        }
+      }
       val canInterrupt = talk.state == TalkController.State.SPEAKING || talk.state == TalkController.State.THINKING
       Orb(
         talk.state,
         talk.level,
-        Modifier.size(260.dp).clip(CircleShape).clickable(
+        Modifier.size(240.dp).clip(CircleShape).clickable(
           enabled = canInterrupt,
           onClickLabel = "Interrupt Jonaki AI",
           role = androidx.compose.ui.semantics.Role.Button,
         ) { talk.interrupt() },
       )
-      Spacer(Modifier.height(36.dp))
+      Spacer(Modifier.height(24.dp))
       AnimatedContent(talk.state, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "label") { s ->
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
           Text(
@@ -114,20 +139,10 @@ fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
             color = Color.White,
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
           )
-          Text(hint(s, talk.headphonesOn), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.6f))
+          Text(hint(s), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.6f))
         }
       }
       Spacer(Modifier.height(20.dp))
-      Text(
-        talk.error ?: talk.caption,
-        style = MaterialTheme.typography.bodyLarge,
-        color = if (talk.error != null) Color(0xFFFFB4AB) else Color.White.copy(alpha = 0.8f),
-        textAlign = TextAlign.Center,
-        maxLines = 4,
-        overflow = TextOverflow.Ellipsis,
-        modifier = Modifier.heightIn(min = 96.dp),
-      )
-      Spacer(Modifier.weight(1f))
       FilledTonalIconButton(
         onClick = onClose,
         modifier = Modifier.size(72.dp),

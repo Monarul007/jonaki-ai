@@ -347,6 +347,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   fun sendTyped(text: String, voice: Boolean = false, extra: List<Attachment> = emptyList()) {
     val atts = draft.toList() + extra
     if ((text.isBlank() && atts.isEmpty()) || !canAsk()) return
+    // Creator/identity facts should never be left to a small model to guess.
+    if (atts.isEmpty() && !busy) {
+      Tutor.identityAnswer(text, prefs.answerBengali || hasBengali(text))?.let { reply ->
+        answerIdentity(text, reply, voice)
+        return
+      }
+    }
     autoFixes = 0
     draft.clear()
     val docs = atts.filter { it.kind == Attachment.Kind.DOC }
@@ -355,7 +362,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       if (voice) "(I said this out loud. Reply to it directly, briefly, as in a spoken conversation.)" else "(see attachment)"
     }
     val hasImage = atts.any { it.kind == Attachment.Kind.IMAGE }
-    val rules = inLanguage(Tutor.wrap(ask, prefs.demos, codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage)))
+    val rules = inLanguage(Tutor.wrap(ask, prefs.demos, codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage), voice = voice))
     val withDocs = if (docs.isEmpty()) rules else "$docs\n\n$rules"
     val hasAudio = atts.any { it.kind == Attachment.Kind.AUDIO }
     val modelText = if (hasAudio) "(${GemmaEngine.VOICE_RULE})\n\n$withDocs" else withDocs
@@ -378,6 +385,19 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice,
       testCode = codeProblem, agent = agent, links = links, linkQuery = Tools.linkQuery(text), offline = offline,
     )
+  }
+
+  /** A fixed, accurate answer to "who are you / who made you". */
+  private fun answerIdentity(ask: String, answer: String, voice: Boolean) {
+    val target = shown
+    target.lines.add(ChatLine(newLineId(target), Who.USER, ask, ask))
+    val id = newLineId(target)
+    val line = ChatLine(id, Who.MODEL, answer, done = true)
+    target.lines.add(line)
+    save(target)
+    onAnswerStart?.invoke(id, voice)
+    onAnswerText?.invoke(id, answer)
+    onAnswerDone?.invoke(line)
   }
 
   /** A tutor button such as "🧒 Simpler". */
@@ -787,9 +807,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           it.copy(text = shown)
         }
         update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
+        // Voice answers are spoken: never leave a picture marker (or a figure card) behind.
+        if (voice) update(answerId) { line ->
+          val clean = line.text.replace(Tutor.FIG_INLINE, "").replace(Regex("\\n{3,}"), "\n\n").trimEnd()
+          if (clean != line.text) line.copy(text = clean) else line
+        }
         // A review/verifier reset used a compact context; give the chat its full memory back.
         if (resetChat || shown !== target) gemma.startChat(history(lines))
-        // Pictures are found after the answer, one at a time; never while talk mode is speaking.
+        // Pictures are found after a typed answer, never in voice chat.
         if (!voice) findFigures = answerId to (topic ?: display)
         if (testCode) fixCode = testAnswer(answerId, codeFixed)
       } catch (t: Throwable) {
