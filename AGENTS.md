@@ -89,7 +89,7 @@ rotation/screens never reload the 2.6 GB model.
 
 ## Current state (2026-11-21)
 
-- Version **1.0.2** / `versionCode 4` (1.0.2: ML Kit formula reading, numbered formula lines, page research).
+- Version **1.0.3** / `versionCode 5` (1.0.3: answers as background jobs with a queue and "Answer ready" notices, general page reading, test bench in evals/).
 - In-app camera + model-wake fixes are committed on `main`.
 - Debug build verified on a Redmi Note 15 Pro+: PID unchanged across capture, no process-exit
   record, photo landed as a draft chip, model stayed loaded.
