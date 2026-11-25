@@ -1,6 +1,7 @@
 package com.offlinegemma.app
 
 import androidx.compose.ui.semantics.selected
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.width
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -40,6 +41,8 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
@@ -149,6 +152,14 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
   }
   var actionsFor by remember { mutableStateOf<ChatLine?>(null) }
   actionsFor?.let { l -> MessageActions(chat, speaker, l, onDismiss = { actionsFor = null }) }
+  // Back from a chat returns to the home screen instead of closing the app, which is what
+  // users expect (and what made a shared/opened chat feel like a dead end).
+  BackHandler(enabled = chat.lines.isNotEmpty() || sheet) {
+    when {
+      sheet -> sheet = false
+      else -> chat.newChat()
+    }
+  }
   Box(Modifier.fillMaxSize()) {
   ModalNavigationDrawer(
     drawerState = drawer,
@@ -418,26 +429,47 @@ private fun LoadError(message: String, onRetry: () -> Unit) {
 private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: () -> Unit, onSettings: () -> Unit, onAbout: () -> Unit) {
   var renaming by remember { mutableStateOf<ChatSummary?>(null) }
   var deleting by remember { mutableStateOf<ChatSummary?>(null) }
+  // Bulk delete: pick several chats, or clear the whole history at once.
+  var selecting by remember { mutableStateOf(false) }
+  val chosen = remember { androidx.compose.runtime.mutableStateListOf<String>() }
+  var confirmBulk by remember { mutableStateOf(false) }
+  fun stopSelecting() { selecting = false; chosen.clear() }
 
   ModalDrawerSheet(drawerContainerColor = MaterialTheme.colorScheme.surfaceContainerLow) {
     Row(Modifier.padding(start = 20.dp, end = 16.dp, top = 20.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
       BrandMark(36.dp, animate = false)
       Spacer(Modifier.size(10.dp))
-      Text("Jonaki AI", style = MaterialTheme.typography.titleLarge)
+      Text(if (selecting) "${chosen.size} selected" else "Jonaki AI", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+      if (selecting) {
+        TextButton(onClick = { stopSelecting() }) { Text("Cancel") }
+      }
     }
-    NavigationDrawerItem(
-      label = { Text("New chat") },
-      icon = { Icon(Icons.Rounded.Add, null) },
-      selected = false,
-      onClick = onNew,
-      modifier = Modifier.padding(horizontal = 12.dp),
-    )
-    Text(
-      "Chats",
-      Modifier.padding(start = 28.dp, top = 16.dp, bottom = 6.dp),
-      style = MaterialTheme.typography.labelLarge,
-      color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    if (!selecting) {
+      NavigationDrawerItem(
+        label = { Text("New chat") },
+        icon = { Icon(Icons.Rounded.Add, null) },
+        selected = false,
+        onClick = onNew,
+        modifier = Modifier.padding(horizontal = 12.dp),
+      )
+    }
+    Row(Modifier.fillMaxWidth().padding(start = 28.dp, end = 12.dp, top = 16.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+      Text(
+        "Chats",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.weight(1f),
+      )
+      when {
+        selecting && chat.chats.isNotEmpty() -> {
+          val all = chosen.size == chat.chats.size
+          TextButton(onClick = { if (all) chosen.clear() else { chosen.clear(); chosen.addAll(chat.chats.map { it.id }) } }) {
+            Text(if (all) "None" else "All")
+          }
+        }
+        chat.chats.isNotEmpty() && !chat.busy -> TextButton(onClick = { selecting = true }) { Text("Select") }
+      }
+    }
     LazyColumn(Modifier.weight(1f)) {
       if (chat.chats.isEmpty()) {
         item {
@@ -451,6 +483,7 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
       }
       items(chat.chats, key = { it.id }) { c ->
         var menu by remember { mutableStateOf(false) }
+        val picked = c.id in chosen
         Box {
           NavigationDrawerItem(
             label = {
@@ -463,22 +496,50 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
                 )
               }
             },
-            icon = { Icon(Icons.Rounded.ChatBubbleOutline, null) },
-            badge = {
-              IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "More for ${c.title}") }
+            icon = {
+              if (selecting) {
+                Icon(
+                  if (picked) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
+                  if (picked) "Selected" else "Not selected",
+                  tint = if (picked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              } else {
+                Icon(Icons.Rounded.ChatBubbleOutline, null)
+              }
             },
-            selected = c.id == chat.chatId,
-            onClick = { onPick(c.id) },
+            badge = {
+              if (!selecting) {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "More for ${c.title}") }
+              }
+            },
+            selected = if (selecting) picked else c.id == chat.chatId,
+            onClick = {
+              if (selecting) { if (picked) chosen.remove(c.id) else chosen.add(c.id) } else onPick(c.id)
+            },
             modifier = Modifier.padding(horizontal = 12.dp).animateContentSize(),
           )
-          DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+          if (!selecting) DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(Icons.Rounded.Edit, null) }, onClick = { menu = false; renaming = c })
             DropdownMenuItem(text = { Text("Delete") }, leadingIcon = { Icon(Icons.Rounded.Delete, null) }, onClick = { menu = false; deleting = c })
           }
         }
       }
     }
-    NavigationDrawerItem(
+    if (selecting) {
+      Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+          if (chosen.isEmpty()) "Choose chats to delete" else "${chosen.size} of ${chat.chats.size}",
+          style = MaterialTheme.typography.bodyMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.weight(1f),
+        )
+        androidx.compose.material3.Button(
+          onClick = { confirmBulk = true },
+          enabled = chosen.isNotEmpty(),
+        ) { Text("Delete") }
+      }
+    }
+    if (!selecting) NavigationDrawerItem(
       label = { Text("Settings") },
       icon = { Icon(Icons.Rounded.Settings, null) },
       selected = false,
@@ -511,6 +572,27 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
       text = { Text("“${c.title}” will be removed from this phone. This can't be undone.") },
       confirmButton = { TextButton(onClick = { chat.deleteChat(c.id); deleting = null }) { Text("Delete") } },
       dismissButton = { TextButton(onClick = { deleting = null }) { Text("Keep") } },
+    )
+  }
+  if (confirmBulk) {
+    val n = chosen.size
+    AlertDialog(
+      onDismissRequest = { confirmBulk = false },
+      title = { Text(if (n == chat.chats.size) "Delete all chats?" else "Delete $n chats?") },
+      text = {
+        Text(
+          if (n == chat.chats.size) "All $n saved chats and their pictures will be removed from this phone. This can't be undone."
+          else "$n saved chats and their pictures will be removed from this phone. This can't be undone.",
+        )
+      },
+      confirmButton = {
+        TextButton(onClick = {
+          confirmBulk = false
+          chat.deleteChats(chosen.toList())
+          stopSelecting()
+        }) { Text("Delete") }
+      },
+      dismissButton = { TextButton(onClick = { confirmBulk = false }) { Text("Keep") } },
     )
   }
 }

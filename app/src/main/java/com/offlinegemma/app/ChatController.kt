@@ -59,6 +59,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   var ready by mutableStateOf(false); private set
   var loading by mutableStateOf(false); private set
+  /** The user's own study material is installed on this phone. */
+  var knowledgeReady by mutableStateOf(false); private set
   var loadError by mutableStateOf<String?>(null); private set
   var busy by mutableStateOf(false); private set
   /** Short status under the top bar, e.g. "Compacting 6 earlier messages…". */
@@ -83,6 +85,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   init {
     refreshChats()
+    knowledgeReady = Knowledge.isInstalled(app)
+  }
+
+  /** After the pack is imported or removed in Settings. */
+  fun refreshKnowledge() {
+    knowledgeReady = Knowledge.isInstalled(app)
   }
 
   fun refreshChats() {
@@ -259,6 +267,21 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     if (busy) return
     store.deleteAll()
     newChat()
+    refreshChats()
+  }
+
+  /** Removes just the chosen chats (the chat being answered is skipped, like deleteChat). */
+  fun deleteChats(ids: Collection<String>) {
+    if (ids.isEmpty()) return
+    val live = ids.filter { it != running?.id }
+    if (live.size != ids.size) {
+      val j = job
+      stop()
+      scope.launch { j?.join(); lastSave?.join(); deleteChats(live) }
+      return
+    }
+    live.forEach { store.delete(it) }
+    if (chatId in live) newChat()
     refreshChats()
   }
 
@@ -517,8 +540,36 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         } else ""
 
         val skippedAudio = attachments.count { it.kind == Attachment.Kind.AUDIO } - audio.size
+        // The user's own study material (Biddabari/Uttoron/NCTB/BPSC) searched on the phone.
+        // Only the best few passages go in, so a 4k-token window still has room to answer.
+        // Voice answers stay conversational and skip this.
+        var knowledge = ""
+        if (!voice) {
+          val q = (topic ?: display).ifBlank { modelText }.take(400)
+          val hits = runCatching { Knowledge.search(app, q, KNOWLEDGE_PASSAGES) }.getOrDefault(emptyList())
+          if (hits.isNotEmpty()) {
+            knowledge = buildString {
+              append("[Reference material from my own study files, copied onto this phone. ")
+              append("Use it when it answers the question. If it does not cover the question, ")
+              append("ignore it and answer normally. When you use it, say plainly that the answer ")
+              append("comes from my study files; never credit a website or book that is not in it, ")
+              append("and do not invent a source.]\n")
+              hits.forEach { h ->
+                append("\n<${h.source} · ${h.title}>\n")
+                append(h.text.take(KNOWLEDGE_CHARS))
+                append("\n")
+              }
+            }
+            update(answerId) {
+              val where = hits.map { h -> h.source }.distinct().joinToString(", ")
+              it.copy(tools = it.tools + ToolUse("knowledge", where, true, hits.first().text.take(400)))
+            }
+            Log.i("ChatController", "knowledge: ${hits.size} passages for '${q.take(80)}'")
+          }
+        }
         val text = buildString {
           append(modelText)
+          if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
             if (images.isNotEmpty()) {
@@ -1275,6 +1326,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     const val ROUND_TIMEOUT_MS = 180_000L
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
+    /** Reference passages per answer, and how much of each to include. */
+    const val KNOWLEDGE_PASSAGES = 3
+    const val KNOWLEDGE_CHARS = 900
 
     /** agent.py pre-fetch line: what to do with a page the user linked, without asking first. */
     const val LINK_RULE =

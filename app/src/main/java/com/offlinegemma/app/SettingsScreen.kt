@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
+import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.SdStorage
@@ -48,6 +49,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -63,6 +67,33 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
   val context = LocalContext.current
   var confirmModel by remember { mutableStateOf(false) }
   var confirmChats by remember { mutableStateOf(false) }
+  var confirmKnowledge by remember { mutableStateOf(false) }
+  // A release build cannot be written to with adb, so the pack is imported through the
+  // system file picker (Downloads, Drive, a USB stick) and copied into the app's own folder.
+  var importing by remember { mutableStateOf(false) }
+  var importNote by remember { mutableStateOf<String?>(null) }
+  val scope = androidx.compose.runtime.rememberCoroutineScope()
+  val pickPack = androidx.activity.compose.rememberLauncherForActivityResult(
+    androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+  ) { uri ->
+    if (uri == null) return@rememberLauncherForActivityResult
+    importing = true
+    importNote = null
+    scope.launch {
+      val ok = withContext(Dispatchers.IO) {
+        runCatching {
+          context.contentResolver.openInputStream(uri)!!.use { input ->
+            Knowledge.file(context).outputStream().use { out -> input.copyTo(out) }
+          }
+          Knowledge.isInstalled(context) && Knowledge.stats(context) != null
+        }.getOrDefault(false)
+      }
+      if (!ok) Knowledge.file(context).delete()
+      chat.refreshKnowledge()
+      importing = false
+      importNote = if (ok) "Study files added." else "That file could not be read as a knowledge pack."
+    }
+  }
   val chatBytes = remember(chat.chats.size) { app.store.bytesUsed() }
   val ram = remember { ModelInfo.totalRamBytes(context) }
 
@@ -134,6 +165,22 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       Section("Storage")
       InfoRow(Icons.Rounded.SdStorage, "Model file", formatBytes(app.gemma.modelFile.length()))
       InfoRow(Icons.Rounded.SdStorage, "Saved chats", "${chat.chats.size} chats · ${formatBytes(chatBytes)}")
+      if (Knowledge.isInstalled(context)) {
+        val stats = remember(confirmKnowledge) { Knowledge.stats(context) }
+        ActionRow(
+          Icons.Rounded.MenuBook,
+          "Study files",
+          stats ?: "Your own notes are used when they match a question.",
+          enabled = !chat.busy,
+        ) { confirmKnowledge = true }
+      } else {
+        ActionRow(
+          Icons.Rounded.MenuBook,
+          if (importing) "Adding study files…" else "Add study files",
+          importNote ?: "Choose a knowledge pack (.pack) to answer from your own notes, papers and books.",
+          enabled = !importing,
+        ) { pickPack.launch(arrayOf("*/*")) }
+      }
       ActionRow(Icons.Rounded.DeleteForever, "Delete all chats", enabled = chat.chats.isNotEmpty() && !chat.busy) { confirmChats = true }
       ActionRow(Icons.Rounded.DeleteForever, "Delete model", "Frees ${formatBytes(ModelInfo.SIZE_BYTES)}. You'll need to download it again.", enabled = !chat.busy) { confirmModel = true }
 
@@ -149,6 +196,20 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       text = { Text("All ${chat.chats.size} saved chats and their pictures will be removed. This can't be undone.") },
       confirmButton = { TextButton(onClick = { chat.deleteAllChats(); confirmChats = false }) { Text("Delete all") } },
       dismissButton = { TextButton(onClick = { confirmChats = false }) { Text("Keep") } },
+    )
+  }
+  if (confirmKnowledge) {
+    AlertDialog(
+      onDismissRequest = { confirmKnowledge = false },
+      title = { Text("Remove your study files?") },
+      text = { Text("Jonaki AI will stop using the reference passages you added. Your chats and the model stay. You can add them again from the computer.") },
+      confirmButton = {
+        TextButton(onClick = {
+          confirmKnowledge = false
+          Knowledge.file(context).delete()
+        }) { Text("Remove") }
+      },
+      dismissButton = { TextButton(onClick = { confirmKnowledge = false }) { Text("Keep") } },
     )
   }
   if (confirmModel) {

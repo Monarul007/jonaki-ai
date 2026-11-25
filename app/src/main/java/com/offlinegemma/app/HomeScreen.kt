@@ -120,7 +120,7 @@ fun HomeScreen(
     AuroraBackground()
     Column(
       Modifier.fillMaxSize().verticalScroll(rememberScrollState())
-        .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 28.dp),
+        .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 40.dp),
     ) {
       AnimatedVisibility(
         visible = entered,
@@ -140,6 +140,28 @@ fun HomeScreen(
       if (loading) {
         Spacer(Modifier.height(26.dp))
         LoadingCard(bengali)
+      }
+
+      if (!loading && chat.knowledgeReady) {
+        Spacer(Modifier.height(18.dp))
+        Row(
+          Modifier.fillMaxWidth().heightIn(min = 28.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            Icons.AutoMirrored.Rounded.MenuBook,
+            null,
+            tint = MaterialTheme.colorScheme.tertiary,
+            modifier = Modifier.size(15.dp),
+          )
+          Spacer(Modifier.width(7.dp))
+          Text(
+            if (bengali) "আপনার পড়ার ফাইল সংযুক্ত — প্রশ্নের সাথে মিললে ব্যবহার হবে"
+            else "Your study files are on — used when they match your question",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
       }
 
       if (recent != null) {
@@ -533,7 +555,14 @@ private fun relativeTime(ms: Long): String =
   ).toString()
 
 private fun startersFor(recent: ChatSummary?, seed: Int, bengali: Boolean): List<HomeStarter> {
-  if (recent != null) return topicStarters(recent.title, seed, bengali)
+  // A voice note or an unnamed chat is not a topic: fall back to the daily set.
+  val topic = recent?.title?.trim().orEmpty()
+  val usable = topic.isNotEmpty() &&
+    !topic.startsWith("🎤") &&
+    !topic.equals("New chat", true) &&
+    !topic.equals("Voice message", true) &&
+    !topic.startsWith("🎤 Voice")
+  if (usable) return topicStarters(topic, seed, bengali)
   val all = curatedStarters(bengali)
   val start = (seed * 3 + LocalDate.now().dayOfYear) % all.size
   return (0 until 3).map { all[(start + it) % all.size] }

@@ -16,3 +16,7 @@ dist/
 
 # Test bench outputs (answers, timings) stay local
 evals/results/
+
+# Personal study data (commercial coaching material): build it, never commit it
+*.pack
+knowledge.pack

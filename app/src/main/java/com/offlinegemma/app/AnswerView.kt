@@ -313,6 +313,7 @@ private fun toolLabel(t: ToolUse) = when (t.name) {
   "run_js" -> if (t.ok == false) "Code test failed" else "Ran code"
   "run_python" -> if (t.ok == false) "Python failed" else "Ran Python"
   "read_document" -> "Read: ${t.detail}"
+  "knowledge" -> "Checked your study files: ${t.detail}"
   else -> t.name
 }
 
