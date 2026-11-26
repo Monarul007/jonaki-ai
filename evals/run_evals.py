@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import time
+import unicodedata
 from datetime import datetime
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -80,9 +81,14 @@ def run_case(case, page_uris, outdir):
     return {"id": cid, "text": "", "error": f"no result after {CASE_TIMEOUT_S}s", "tools": [], "sources": []}
 
 
+def nfc(s):
+    # Bengali letters such as য় can be one code point or two; compare them the same way.
+    return unicodedata.normalize("NFC", s)
+
+
 def has_any(text, words):
-    low = text.lower()
-    return any(w.lower() in low for w in words)
+    low = nfc(text).lower()
+    return any(nfc(w).lower() in low for w in words)
 
 
 def score(case, result, cases_by_id):
@@ -192,6 +198,11 @@ def main():
     with open(os.path.join(HERE, "cases.json"), encoding="utf-8") as f:
         spec = json.load(f)
     cases = spec["cases"]
+    # Recent NTRCA / BCS exam questions live in their own file.
+    exams = os.path.join(HERE, "exam_cases.json")
+    if os.path.exists(exams):
+        with open(exams, encoding="utf-8") as f:
+            cases = cases + json.load(f)["cases"]
     by_id = {c["id"]: c for c in cases}
     if args[:1] == ["--score-only"]:
         outdir = args[1]
