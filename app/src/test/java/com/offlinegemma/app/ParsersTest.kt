@@ -131,8 +131,10 @@ class MathTest {
 
   @Test fun fractionsAndPowers() {
     val s = Markdown.tex("\\frac{1}{2} m v^2")
-    assertTrue(s.startsWith("1/2"))
-    assertTrue(s.contains("${Markdown.SUP_ON}2${Markdown.SUP_OFF}"))
+    // A fraction is a division: it shows as ÷ on the card, not as a slash (which reads as a date or
+    // a file path, and hides that the sum has two parts).
+    assertTrue(s, s.startsWith("1 ÷ 2"))
+    assertTrue(s, s.contains("${Markdown.SUP_ON}2${Markdown.SUP_OFF}"))
   }
 
   @Test fun chemistryTexGivesArrowAndSubscripts() {

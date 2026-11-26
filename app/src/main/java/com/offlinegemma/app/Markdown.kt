@@ -157,10 +157,16 @@ object Markdown {
       i++
     }
     flush()
-    return out
+    // A derivation written as several $$…$$ lines is ONE piece of working, not a stack of unrelated
+    // boxes. Merge neighbouring display maths so it reads like a textbook or an editor's maths pad.
+    val merged = ArrayList<Block>(out.size)
+    for (b in out) {
+      val prev = merged.lastOrNull()
+      if (b is Block.Math && prev is Block.Math) merged[merged.size - 1] = Block.Math(prev.tex + "\n" + b.tex)
+      else merged.add(b)
+    }
+    return merged
   }
-
-  // ---------- maths ----------
 
   private val TEX_SYMBOLS = mapOf(
     "times" to "×", "cdot" to "·", "div" to "÷", "pm" to "±", "mp" to "∓",
@@ -189,8 +195,10 @@ object Markdown {
     s = Regex("""\barrow\b""", RegexOption.IGNORE_CASE).replace(s, "→")
     s = s.replace("<=>", "⇌")
     s = s.replace(Regex("""\\(?:text|mathrm|mathbf|mathit|textrm|ce|operatorname)\{([^{}]*)\}"""), "$1")
-    repeat(2) { s = s.replace(Regex("""\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}"""), "($1)/($2)") }
-    s = s.replace(Regex("""\(([A-Za-z0-9.]+)\)/\(([A-Za-z0-9.]+)\)"""), "$1/$2")
+    repeat(2) { s = s.replace(Regex("""\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}"""), "($1)÷($2)") }
+    // A fraction reads as a division, which is "÷" in a textbook, not a slash — a slash turns
+    // "২১০০ ÷ ১৪" into a file path and makes a two-part sum look like one number.
+    s = s.replace(Regex("""\(([A-Za-z0-9.]+)\)÷\(([A-Za-z0-9.]+)\)"""), "$1 ÷ $2")
     s = s.replace(Regex("""\\sqrt\{([^{}]*)\}"""), "√($1)")
     s = s.replace("\\_", "_")
     // Only the standalone commands: removing "\\right" from "\\rightarrow" left the word "arrow".

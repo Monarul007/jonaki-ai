@@ -35,6 +35,15 @@ class Prefs(context: Context) {
     get() = _agent.value
     set(v) { _agent.value = v; sp.edit().putBoolean("agent", v).apply() }
 
+  /**
+   * Let the model reason step by step before answering a question with numbers in it.
+   * Off by default: on this phone reasoning decodes at a few tokens a second.
+   */
+  private val _thinking = bool("thinking", false)
+  var thinking: Boolean
+    get() = _thinking.value
+    set(v) { _thinking.value = v; sp.edit().putBoolean("thinking", v).apply() }
+
   /** Web search tool and "Check facts". The only thing that ever sends data off the phone. */
   private val _webSearch = bool("web_search", true)
   var webSearch: Boolean

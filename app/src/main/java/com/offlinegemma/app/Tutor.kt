@@ -118,6 +118,30 @@ object Tutor {
   fun looksLikeCodeProblem(text: String, hasImage: Boolean) =
     CODE_RX.containsMatchIn(text) && (hasImage || CODE_WORDS.containsMatchIn(text))
 
+  private val NUMBER_RX = Regex("[0-9০-৯]")
+  private val MATH_WORD_RX = Regex(
+    "(?i)(শতকরা|শতাংশ|শতাংশ|অনুপাত|ভাগ|গড়|বয়স|সুদ|চক্রবৃদ্ধি|সরল|ক্ষেত্রফল|আয়তন|বেগ|সময়|" +
+      "লাভ|ক্ষতি|ক্রয়মূল্য|বিক্রয়|কত|percent|percentage|ratio|average|age|interest|area|" +
+      "speed|profit|loss|solve|calculate|sum|একসাথে|দিনে|ঘণ্টায়|টাকা|মিটার|কিলোমিটার|কেজি|" +
+      "\\d\\s*[+\\-*/×÷%]|[+\\-*/×÷%]\\s*\\d|=|²|³)",
+  )
+
+  /**
+   * Does this question need arithmetic worked out? True for a sum the model has to set up itself
+   * (a word problem), which is exactly where a small model invents plausible numbers: it answered
+   * a 2:3:4:5 share question with "1142.86" instead of 1400. [calc] is the planner's expression.
+   */
+  fun looksNumeric(question: String, calc: String? = null): Boolean {
+    if (!calc.isNullOrBlank()) return true
+    if (!NUMBER_RX.containsMatchIn(question)) return false
+    return MATH_WORD_RX.containsMatchIn(question)
+  }
+
+  /** The rule that stopped the model from choosing an answer just because it was in the options. */
+  const val NO_BACKSOLVE =
+    "Never pick an option because it is listed, and never reason backwards from the options. If my " +
+      "message needs arithmetic, show the calculation and let the number decide the option."
+
   // agent.py's coding-problem rule. The phone has no Python, so the answer is JavaScript,
   // which the app runs in its sandbox and shows the output (like the PC runs Python).
   private const val RULE_CODE =

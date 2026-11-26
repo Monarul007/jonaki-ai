@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "Acceptance rules modelled on the official sample's integration tests.",
+    "rag_chat_test.dart judges retrieval by the ANSWER (the reply must contain the excerpt's fact)",
+    "and asserts an off-topic question is BELOW the gate with no citation. model_smoke_test.dart",
+    "fails a silent backend change. The rules below apply the same idea to Jonaki's eval results."
+  ],
+  "cases": [
+    {
+      "id": "ntrca_ratio_share",
+      "why": "2:3:4:5 share of 9800. The working was previously nonsense (a digit slip wrote 9800 as 98800) while the final number was copied from a study passage.",
+      "must_contain": ["2100", "২১০০"],
+      "must_not_contain": ["98800", "৯৮৮০০", "32856", "৩২৮৫৬"],
+      "knowledge_must_not_include": ["nctb-chemistry"],
+      "no_web_sources": true
+    }
+  ],
+  "global": {
+    "_comment": [
+      "Invariants true of every case, whatever it asks.",
+      "A silent digit duplication inside arithmetic is the specific defect this run exists to catch."
+    ],
+    "must_not_contain": ["<channel|>"],
+    "forbid_hallucinated_digits": ["98800", "৯৮৮০০"]
+  }
+}

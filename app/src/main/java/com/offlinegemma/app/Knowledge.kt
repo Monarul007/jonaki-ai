@@ -37,6 +37,19 @@ object Knowledge {
 
   fun isInstalled(context: Context) = file(context).isFile
 
+  /** Every passage, for the semantic index. Empty when the pack is not installed. */
+  fun passages(context: Context): List<Passage> = load(context)?.passages ?: emptyList()
+
+  /**
+   * Identifies this exact pack file, so a semantic index can tell whether it still describes it.
+   * Null when there is no pack.
+   */
+  fun packStamp(context: Context): Long? {
+    val f = file(context)
+    if (!f.isFile) return null
+    return f.length() * 31 + f.lastModified()
+  }
+
   /** How many passages and their total size, for Settings. */
   fun stats(context: Context): String? {
     val p = load(context) ?: return null

@@ -50,6 +50,11 @@ data class ChatLine(
   val autoFixing: Boolean = false,
   /** Text a code test printed (shown under the answer). */
   val runOutput: String? = null,
+  /**
+   * The model's own reasoning for this answer, when thinking was on. Shown only inside the
+   * collapsed work panel, never as part of the answer.
+   */
+  val thought: String = "",
 )
 
 data class ChatSummary(val id: String, val title: String, val updated: Long)
@@ -126,6 +131,7 @@ class ChatStore(context: Context) {
     l.seconds?.let { put("secs", it) }
     l.error?.let { put("err", it) }
     l.runOutput?.let { put("run", it) }
+    if (l.thought.isNotBlank()) put("thought", l.thought.take(6000))
   }
 
   private fun lineFrom(o: JSONObject): ChatLine {
@@ -149,6 +155,7 @@ class ChatStore(context: Context) {
       seconds = if (o.has("secs")) o.optDouble("secs") else null,
       error = o.optString("err").ifEmpty { null },
       runOutput = o.optString("run").ifEmpty { null },
+      thought = o.optString("thought"),
     )
   }
 }

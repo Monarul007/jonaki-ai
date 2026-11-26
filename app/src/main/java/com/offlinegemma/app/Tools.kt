@@ -241,6 +241,72 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
     return java.math.BigDecimal(d).setScale(4, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
   }
 
+  /**
+   * Makes a multiple-choice answer name ONE option, consistently.
+   *
+   * The model opened with "(খ) অম্বর" and then argued for "অবনী" in the body — the first line the
+   * user reads contradicted the reasoning under it. The option the body actually supports is taken
+   * from the answer's own closing/summary reasoning, and the opening line is rewritten to name it.
+   * Does nothing when the answer already agrees with itself, or when the options cannot be read.
+   */
+  fun settleChoice(text: String, question: String): String {
+    val options = optionsOf(question)
+    if (options.isEmpty()) return text
+    val opening = OPENING_OPTION.find(text) ?: return text
+    // Group 2 is the option's text ("অম্বর"); group 1 is only its label letter.
+    val first = matchOption(opening.groupValues[2], options) ?: return text
+    // Which option does the rest of the answer argue for? The last option named in a sentence that
+    // says "correct/right/সঠিক/উত্তর", falling back to the most-mentioned option.
+    val body = text.substring(opening.range.last + 1)
+    // Only an explicit commitment counts ("'অবনী' সঠিক", "the correct answer is অবনী"). Counting
+    // mentions instead would rewrite the opening of a self-consistent answer just because a quoted
+    // study passage named another option more often — which made the answer contradict itself worse.
+    val claimed = CLAIM.find(body)?.groupValues?.drop(2)?.firstOrNull { it.isNotBlank() }
+    val argued = claimed?.let { matchOption(it, options) }
+    if (argued == null || argued == first) return text
+    // Replace label AND text: swapping only the word left "(খ) অবনী", which still names the wrong
+    // option letter and would be marked wrong by a reader or a scorer.
+    // Literal replacement, not replaceFirst(String, String): there the arguments are regexes, so
+    // "(ক)" became the capture group matching just "ক" and the label was silently left alone.
+    val fixedOpening = opening.value
+      .replace(first.second, argued.second)
+      .replace("(${first.first})", "(${argued.first})")
+    return text.replace(opening.value, fixedOpening)
+  }
+
+  /** The "(ক) অবনী" style options a question offers, as (label, text). */
+  fun optionsOf(question: String): List<Pair<String, String>> {
+    val out = ArrayList<Pair<String, String>>()
+    for (m in OPTION.findAll(question)) {
+      val label = m.groupValues[1]
+      val body = m.groupValues[2].trim().trimEnd('।', '.', ',')
+      if (body.isNotBlank() && out.none { it.second == body }) out.add(label to body)
+    }
+    return out
+  }
+
+  private fun matchOption(named: String, options: List<Pair<String, String>>): Pair<String, String>? {
+    val want = named.trim()
+    return options.firstOrNull { it.second == want }
+      ?: options.firstOrNull { it.second.contains(want) || want.contains(it.second) }
+      ?: options.firstOrNull { o -> OPTION_LABEL.find(named)?.groupValues?.get(1) == o.first }
+  }
+
+  private val OPTION = Regex("""\(([কখগঘঙচছa-dA-D])\)\s*([^\n()কখগঘ]+)""")
+  private val OPTION_LABEL = Regex("""\(([কখগঘঙচছa-dA-D])\)""")
+  /** "(খ) অম্বর" — the option the answer opens with. */
+  private val OPENING_OPTION = Regex("""^\s*\**\(([কখগঘঙচছa-dA-D])\)\s*([^\n*।]{1,40})""")
+  /**
+   * A sentence that commits: "সঠিক উত্তর হলো অবনী", "'অবনী' সঠিক", "the correct answer is অবনী".
+   * The Bengali class must span the whole block (U+0980–U+09FF), not just letters: a vowel sign such
+   * as "ী" is outside the letter range, so "অবনী" was invisible to an earlier version of this.
+   */
+  private val CLAIM = Regex(
+    """(?:সঠিক|সর্বোত্তম|প্রকৃত)\s*(?:উত্তর|বিকল্প)?[^\n।]{0,30}?(['‘"]?)([\u0980-\u09FF]{2,})\1|""" +
+      """(['‘"]([\u0980-\u09FF]{2,})['’"]\s*(?:শব্দটি|অর্থটি)?\s*সঠিক)|""" +
+      """(?i)(?:correct|right|best)\s+(?:answer|option)\s+is\s+([A-Za-z\u0980-\u09FF]{2,})""",
+  )
+
   /** False for the app's own "could not read this page" messages from [webFetch]. */
   fun usablePage(text: String) = text.isNotBlank() &&
     !text.startsWith("The page came back almost empty") && !text.startsWith("This PDF has no text layer")

@@ -24,8 +24,10 @@ import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.MenuBook
 import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.Psychology
 import androidx.compose.material.icons.rounded.Science
 import androidx.compose.material.icons.rounded.SdStorage
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Translate
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.AlertDialog
@@ -72,6 +74,21 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
   // system file picker (Downloads, Drive, a USB stick) and copied into the app's own folder.
   var importing by remember { mutableStateOf(false) }
   var importNote by remember { mutableStateOf<String?>(null) }
+  // The embedder downloads and indexes in the background, so the row polls its state.
+  var semanticTick by remember { mutableStateOf(0) }
+  androidx.compose.runtime.LaunchedEffect(Unit) {
+    while (true) { kotlinx.coroutines.delay(1500); semanticTick++ }
+  }
+  fun semanticNote(): String {
+    val index = if (semanticTick >= 0) Semantic.progress else null
+    return when {
+      index != null -> "Indexing your study files… ${index.first} / ${index.second}"
+      !Semantic.isDownloaded(context) ->
+        "Off. Adds ${formatBytes(Semantic.SIZE_BYTES)}: searches your notes by meaning, not just matching words."
+      Semantic.isReady -> "On — your study files are searched by meaning."
+      else -> "Downloaded. Tap to build the search index."
+    }
+  }
   val scope = androidx.compose.runtime.rememberCoroutineScope()
   val pickPack = androidx.activity.compose.rememberLauncherForActivityResult(
     androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
@@ -115,6 +132,12 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       Section("Answers")
       SwitchRow(Icons.Rounded.Build, "Tools (agent mode)", "Jonaki AI may search the web and test code to give better answers.", prefs.agent) { prefs.agent = it }
       SwitchRow(Icons.Rounded.Language, "Web search", "The only thing that uses the internet. Your question is sent to DuckDuckGo.", prefs.webSearch) { prefs.webSearch = it }
+      SwitchRow(
+        Icons.Rounded.Psychology,
+        "Think before answering",
+        "For questions with numbers in them, Jonaki AI works the steps out first. Slower, but it gets sums right more often.",
+        prefs.thinking,
+      ) { prefs.thinking = it; chat.onThinkingChanged() }
       SwitchRow(
         Icons.Rounded.Science, "Interactive demos",
         "Live science demos with sliders in tutor answers." + if (ram < ModelInfo.MIN_RAM_BYTES) " Slow on this phone (a few minutes each)." else "",
@@ -180,6 +203,10 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
           importNote ?: "Choose a knowledge pack (.pack) to answer from your own notes, papers and books.",
           enabled = !importing,
         ) { pickPack.launch(arrayOf("*/*")) }
+      }
+      ActionRow(Icons.Rounded.Search, "Semantic study search", semanticNote(), enabled = !chat.busy) {
+        if (Semantic.isDownloaded(context)) chat.buildSemanticIndex()
+        else ModelDownloadWorker.start(context, prefs.wifiOnly, ModelDownloadWorker.MODEL_EMBEDDER)
       }
       ActionRow(Icons.Rounded.DeleteForever, "Delete all chats", enabled = chat.chats.isNotEmpty() && !chat.busy) { confirmChats = true }
       ActionRow(Icons.Rounded.DeleteForever, "Delete model", "Frees ${formatBytes(ModelInfo.SIZE_BYTES)}. You'll need to download it again.", enabled = !chat.busy) { confirmModel = true }

@@ -38,27 +38,44 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
 
   override suspend fun getForegroundInfo(): ForegroundInfo = foregroundInfo(0, "Starting…")
 
+  /** Whichever file this job is for: the chat model, or the embedder used for semantic search. */
+  private fun target(ctx: Context): Target =
+    if (inputData.getString(KEY_MODEL) == MODEL_EMBEDDER) {
+      Target(
+        name = Semantic.NAME, url = Semantic.URL, size = Semantic.SIZE_BYTES, sha = Semantic.SHA256,
+        part = Semantic.partFile(ctx), file = Semantic.file(ctx),
+      )
+    } else {
+      Target(
+        name = ModelInfo.NAME, url = ModelInfo.URL, size = ModelInfo.SIZE_BYTES, sha = ModelInfo.SHA256,
+        part = ModelInfo.partFile(ctx), file = ModelInfo.modelFile(ctx),
+      )
+    }
+
+  private data class Target(
+    val name: String, val url: String, val size: Long, val sha: String,
+    val part: File, val file: File,
+  )
+
   override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
     val ctx = applicationContext
-    if (ModelInfo.isDownloaded(ctx)) return@withContext Result.success()
+    val t = target(ctx)
+    if (t.file.length() == t.size) return@withContext Result.success()
 
-    if (!ModelInfo.hasEnoughStorage(ctx)) {
+    val free = ModelInfo.freeBytes(ctx)
+    val needed = (t.size - t.part.length()).coerceAtLeast(0) + ModelInfo.SPARE_BYTES
+    if (free < needed) {
       return@withContext Result.failure(
-        error(
-          ERR_STORAGE,
-          "Not enough space. Need ${formatBytes(ModelInfo.bytesNeeded(ctx))}, " +
-            "free ${formatBytes(ModelInfo.freeBytes(ctx))}.",
-        )
+        error(ERR_STORAGE, "Not enough space. Need ${formatBytes(needed)}, free ${formatBytes(free)}.")
       )
     }
 
     setForeground(foregroundInfo(0, "Starting…"))
-    val part = ModelInfo.partFile(ctx)
 
     try {
-      download(part)
+      download(t)
     } catch (e: IOException) {
-      Log.w(TAG, "Download interrupted at ${part.length()} bytes, will retry", e)
+      Log.w(TAG, "${t.name} interrupted at ${t.part.length()} bytes, will retry", e)
       // Partial file stays; WorkManager retries with back-off and we resume from it.
       return@withContext if (runAttemptCount < MAX_ATTEMPTS) Result.retry()
       else Result.failure(error(ERR_NETWORK, "Download keeps failing: ${e.message}"))
@@ -67,28 +84,28 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
     // Fingerprint check.
     setProgress(workDataOf(KEY_PHASE to PHASE_VERIFYING))
     setForeground(foregroundInfo(100, "Checking file…"))
-    val hash = sha256(part)
-    if (hash != ModelInfo.SHA256) {
-      Log.e(TAG, "Checksum mismatch: $hash")
-      part.delete()
+    val hash = sha256(t.part)
+    if (hash != t.sha) {
+      Log.e(TAG, "Checksum mismatch for ${t.name}: $hash")
+      t.part.delete()
       return@withContext Result.failure(
         error(ERR_CHECKSUM, "The downloaded file was damaged. Please try again.")
       )
     }
-    val target = ModelInfo.modelFile(ctx)
-    target.delete()
-    if (!part.renameTo(target)) {
+    t.file.delete()
+    if (!t.part.renameTo(t.file)) {
       return@withContext Result.failure(error(ERR_OTHER, "Could not save the model file."))
     }
-    Log.i(TAG, "Model ready: ${target.path}")
+    Log.i(TAG, "${t.name} ready: ${t.file.path}")
     Result.success()
   }
 
-  private suspend fun download(part: File) {
+  private suspend fun download(t: Target) {
+    val part = t.part
     var have = part.length()
-    if (have >= ModelInfo.SIZE_BYTES) return
+    if (have >= t.size) return
 
-    val conn = (URL(ModelInfo.URL).openConnection() as HttpURLConnection).apply {
+    val conn = (URL(t.url).openConnection() as HttpURLConnection).apply {
       connectTimeout = 20_000
       readTimeout = 30_000
       instanceFollowRedirects = true // Hugging Face redirects to its file servers
@@ -134,7 +151,7 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
             }
             if (now - lastReport >= 500) {
               lastReport = now
-              val left = if (rate > 0) (ModelInfo.SIZE_BYTES - have) * 1000 / rate else -1
+              val left = if (rate > 0) (t.size - have) * 1000 / rate else -1
               setProgress(
                 workDataOf(
                   KEY_PHASE to PHASE_DOWNLOADING,
@@ -143,15 +160,15 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
                   KEY_LEFT_MS to left,
                 )
               )
-              val pct = (have * 100 / ModelInfo.SIZE_BYTES).toInt()
-              val detail = "${formatBytes(have)} / ${formatBytes(ModelInfo.SIZE_BYTES)}" +
+              val pct = (have * 100 / t.size).toInt()
+              val detail = "${formatBytes(have)} / ${formatBytes(t.size)}" +
                 (if (left > 0) " · ${formatDuration(left)} left" else "")
-              setForeground(foregroundInfo(pct, detail))
+              setForeground(foregroundInfo(pct, detail, t.name))
             }
           }
         }
       }
-      if (have < ModelInfo.SIZE_BYTES) throw IOException("Connection closed early at $have bytes")
+      if (have < t.size) throw IOException("Connection closed early at $have bytes")
     } finally {
       conn.disconnect()
     }
@@ -171,14 +188,14 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
     return md.digest().joinToString("") { "%02x".format(it) }
   }
 
-  private fun foregroundInfo(percent: Int, text: String): ForegroundInfo {
+  private fun foregroundInfo(percent: Int, text: String, name: String = ModelInfo.NAME): ForegroundInfo {
     val nm = applicationContext.getSystemService(NotificationManager::class.java)
     nm.createNotificationChannel(
       NotificationChannel(CHANNEL, "Model download", NotificationManager.IMPORTANCE_LOW)
     )
     val n = NotificationCompat.Builder(applicationContext, CHANNEL)
       .setSmallIcon(android.R.drawable.stat_sys_download)
-      .setContentTitle("Downloading ${ModelInfo.NAME}")
+      .setContentTitle("Downloading $name")
       .setContentText(text)
       .setProgress(100, percent, false)
       .setOngoing(true)
@@ -203,6 +220,10 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
     const val KEY_LEFT_MS = "left_ms"
     const val KEY_ERROR = "error"
     const val KEY_ERROR_CODE = "error_code"
+    const val KEY_MODEL = "model"
+    const val MODEL_GEMMA = "gemma"
+    const val MODEL_EMBEDDER = "embedder"
+    const val WORK_EMBEDDER = "embedder-download"
     const val PHASE_DOWNLOADING = "downloading"
     const val PHASE_VERIFYING = "verifying"
     const val ERR_STORAGE = "storage"
@@ -210,8 +231,8 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
     const val ERR_CHECKSUM = "checksum"
     const val ERR_OTHER = "other"
 
-    /** Starts (or restarts with new Wi-Fi setting) the download. The partial file is kept. */
-    fun start(context: Context, wifiOnly: Boolean) {
+    /** Starts (or restarts with new Wi-Fi setting) a download. The partial file is kept. */
+    fun start(context: Context, wifiOnly: Boolean, model: String = MODEL_GEMMA) {
       val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
         .setConstraints(
           Constraints.Builder()
@@ -219,14 +240,19 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
             .setRequiresStorageNotLow(true)
             .build()
         )
+        .setInputData(workDataOf(KEY_MODEL to model))
         .build()
-      WorkManager.getInstance(context)
-        .enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+      WorkManager.getInstance(context).enqueueUniqueWork(
+        if (model == MODEL_EMBEDDER) WORK_EMBEDDER else WORK_NAME,
+        ExistingWorkPolicy.REPLACE,
+        request,
+      )
     }
 
     /** Pause: stops the download but keeps the partial file to resume later. */
-    fun pause(context: Context) {
-      WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME)
+    fun pause(context: Context, model: String = MODEL_GEMMA) {
+      WorkManager.getInstance(context)
+        .cancelUniqueWork(if (model == MODEL_EMBEDDER) WORK_EMBEDDER else WORK_NAME)
     }
   }
 }

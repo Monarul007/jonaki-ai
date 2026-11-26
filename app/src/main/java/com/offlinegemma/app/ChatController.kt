@@ -88,11 +88,57 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   init {
     refreshChats()
     knowledgeReady = Knowledge.isInstalled(app)
+    warmSemantic()
   }
+
+  /**
+   * Builds (or loads) the semantic index in the background. Indexing the whole pack takes minutes
+   * on a CPU embedder, so it must never block a turn: until it is ready, search stays on BM25.
+   */
+  private fun warmSemantic() {
+    if (!Semantic.isDownloaded(app) || !Knowledge.isInstalled(app)) return
+    scope.launch {
+      val ok = runCatching { Semantic.prepare(app) }.getOrDefault(false)
+      Log.i("ChatController", "semantic index ready=$ok (${Semantic.progress ?: "idle"})")
+    }
+  }
+
+  /** Called when the embedder download finishes, so search upgrades without a restart. */
+  fun buildSemanticIndex() = warmSemantic()
 
   /** After the pack is imported or removed in Settings. */
   fun refreshKnowledge() {
     knowledgeReady = Knowledge.isInstalled(app)
+    // A new pack invalidates the vectors; prepare() notices the stamp changed and re-indexes.
+    warmSemantic()
+  }
+
+  /** After the user changes the thinking setting, so it applies to the next answer. */
+  fun onThinkingChanged() {
+    if (!ready || busy) return
+    chatReset = scope.launch { gemma.startChat(history(shown.lines)) }
+  }
+
+  private val SELF_INTRO = Regex(
+    "(?i)^\\s*jonaki a[i1]\\s*[,—-]?\\s*made by monarul[^\\n]*(\\.|।)\\s*",
+  )
+
+  /**
+   * Drops a self-introduction the model prepended to an unrelated answer, and any reasoning
+   * channel text that leaked into a reply. Reasoning must never be shown or spoken.
+   */
+  private fun pruneReasoning() {
+    for (ref in listOfNotNull(shown, running)) {
+      for (i in ref.lines.indices) {
+        val line = ref.lines[i]
+        if (line.who != Who.MODEL) continue
+        var text = line.text
+        text = SELF_INTRO.replace(text, "")
+        // A reasoning block that slipped through as plain text.
+        text = text.replace(Regex("(?s)<\\|channel>thought\\n.*?<\\|channel\\|>"), "").trim()
+        if (text != line.text) ref.lines[i] = line.copy(text = text)
+      }
+    }
   }
 
   fun refreshChats() {
@@ -297,7 +343,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val t = ref.title
     lastSave = scope.launch(Dispatchers.IO) {
       store.save(id, t, snapshot)
-      withContext(Dispatchers.Main) { refreshChats() }
+      withContext(Dispatchers.Main) { refreshChats(); pruneReasoning() }
     }
   }
 
@@ -548,7 +594,31 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var knowledge = ""
         if (!voice) {
           val q = (topic ?: display).ifBlank { modelText }.take(400)
-          val hits = runCatching { Knowledge.search(app, q, KNOWLEDGE_PASSAGES) }.getOrDefault(emptyList())
+          // A sum must not be handed chemistry prose: the passage has to carry a number to be
+          // relevant to arithmetic at all.
+          val numericHint = Tutor.looksNumeric(topic ?: display)
+          // Semantic search first: an absolute cosine gate (0.70), so an unrelated page is dropped
+          // however good it looked beside the others. BM25 is the fallback when the embedder or its
+          // index is not ready, never a second opinion after the gate rejected everything.
+          val semantic = if (Semantic.isReady) {
+            runCatching { Semantic.search(app, q, Semantic.LIMIT) }.getOrDefault(emptyList())
+              .map { it.passage }
+          } else null
+          val rawHits = semantic
+            ?: runCatching { Knowledge.search(app, q, KNOWLEDGE_PASSAGES) }.getOrDefault(emptyList())
+          // The evidence rules apply to both paths. BM25's floor is relative to its own best hit, so
+          // with every candidate weak the best of them still passed — that is how chemistry prose
+          // reached a ratio sum. For a numeric question the passage must at least carry a number,
+          // and preferably the question's own most specific one (9800, not just any digit).
+          fun hasDigit(p: Knowledge.Passage) = p.text.any { c -> c in '0'..'9' || c in '০'..'৯' }
+          val keyNumber = numbersOf(topic ?: display).maxByOrNull { it.length }
+          val hits = when {
+            !numericHint -> rawHits
+            keyNumber != null -> rawHits.filter {
+              MathCheck.asciiDigits(it.text).contains(keyNumber)
+            }.ifEmpty { rawHits.filter(::hasDigit) }
+            else -> rawHits.filter(::hasDigit)
+          }
           if (hits.isNotEmpty()) {
             knowledge = buildString {
               append("[Reference material from my own study files, copied onto this phone. ")
@@ -566,9 +636,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               val where = hits.map { h -> h.source }.distinct().joinToString(", ")
               it.copy(tools = it.tools + ToolUse("knowledge", where, true, hits.first().text.take(400)))
             }
-            Log.i("ChatController", "knowledge: ${hits.size} passages for '${q.take(80)}'")
+            Log.i("ChatController", "knowledge: ${hits.size} passages (${if (semantic != null) "semantic" else "bm25"}) for '${q.take(80)}'")
           }
         }
+        // The model decided this is a pure calculation, so the study passages were never the
+        // evidence for it. Drop them: a ratio worked out from the question needs no prose, and
+        // unrelated material only gives the model something to copy from.
+        var pureSum = false
 
         // A typed question is looked up first, like a search engine's AI mode: the model says what
         // to search for (or that no search would help), the app reads the best few pages at once,
@@ -579,21 +653,75 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val numbered = mutableListOf<Source>()
         var calcNote = ""
         var choices = false
+        var numericQ = false
         val canSearch = !offline && prefs.webSearch && Tools.online(app)
         val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode) {
           val plan = planAnswer(topic, canSearch)
           choices = plan.choices
-          plan.calc?.let { calcNote = calculate(answerId, it) }
-          if (canSearch && plan.query != null) {
+          // Record the decision itself: it is the step a reader most wants to see ("why did it
+          // search that?"). Ordered before the tool calls it caused.
+          val decided = buildList {
+            plan.query?.let { add("search: “$it”") }
+            plan.calc?.let { add("calculate: $it") }
+            if (plan.choices) add("pick from my options")
+          }
+          update(answerId) {
+            it.copy(
+              tools = listOf(
+                ToolUse(
+                  "plan",
+                  if (decided.isEmpty()) "answer directly" else decided.joinToString(" · "),
+                  true,
+                ),
+              ) + it.tools,
+            )
+          }
+          // A sum the model has to set up itself (a word problem) is where a small model invents
+          // arithmetic. That is also the case thinking helps, so it is what the gate keys off.
+          numericQ = Tutor.looksNumeric(topic, plan.calc)
+          // A pure calculation is worked out, not looked up. The planner decided this needs
+          // arithmetic, so the retrieved prose is not the evidence for it and would only give the
+          // model something to copy the final number from.
+          if (numericQ && plan.calc != null) {
+            pureSum = true
+            if (knowledge.isNotBlank()) {
+              knowledge = ""
+              update(answerId) { line ->
+                line.copy(tools = line.tools.filterNot { t -> t.name == "knowledge" })
+              }
+              Log.i("ChatController", "study passages dropped: this is a calculation")
+            }
+          }
+          // The planner invents coefficients: for a 2:3:4:5 share it wrote "(9800 / 19) * 5", and a
+          // number like 19 appears nowhere in the question. Handing that to the model as "verified"
+          // is worse than no calculator at all, so an expression may only use numbers the question
+          // itself gave (percentages bring their own 100).
+          plan.calc?.let { expr ->
+            if (groundedCalc(topic ?: "", expr)) calcNote = calculate(answerId, expr)
+            else Log.i("ChatController", "calc dropped, not grounded in the question: $expr")
+          }
+          // A sum needs the calculator, not the web: searching a word problem returned
+          // calculator.net and "long division" pages, which only added noise the model then
+          // tried to reconcile with its own working.
+          if (canSearch && plan.query != null && !numericQ) {
             researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
           } else ""
         } else ""
+        // Thinking costs a lot of time on a phone (~5 tokens/s), so it is opt-in and only for
+        // questions with numbers in them, never for voice or a plain chat turn. It is switched on
+        // the message itself (`gemma.send(..., think = …)`), not by rebuilding the conversation,
+        // so the history is not re-read just to reason about one question.
+        val thinkNow = numericQ && prefs.thinking && !voice
+        // Reasoning streams into the work panel as it is produced, so the user can watch the
+        // model think instead of staring at a spinner. Throttled: every piece would redraw the list.
+        gemma.onThought = { piece -> if (voice) Unit else update(answerId) { it.copy(thought = gemma.lastThought.toString()) } }
         // With sources already in hand, the tool-calling instructions only cost room and time.
         val agent = agentAllowed && webBlock.isBlank()
         val text = buildString {
           append(modelText)
-          if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
+          // Verified numbers come first: a note placed after a page of study material was ignored.
           if (calcNote.isNotBlank()) append("\n\n").append(calcNote)
+          if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
           if (webBlock.isNotBlank()) {
             append("\n\n").append(webBlock)
             append("\n\n[Now answer exactly what my message above asks, using these sources. Right after each fact you took ")
@@ -602,12 +730,27 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             append("Never invent a source or a number. Do not add a list of sources or links at the end: ")
             append("the app shows them under your answer.]")
           }
+          if (numericQ) {
+            // A number with no work behind it cannot be checked, and a small model's number is
+            // wrong often enough that the steps are the point, not decoration.
+            append("\n\n[This question needs a calculation. Show every step with its numbers, then ")
+            append("state the final answer. Never answer with just the result, and never pick a ")
+            append("number because it appears among the options. ")
+            // Two specific habits this model shows on rate/work word problems. Both were observed:
+            // it "re-evaluated" and restated its own numbers until it was cut off mid-sentence, and it
+            // repeated the question's figures ("4 men and 1010 boys").
+            append("Work the answer out once. Do not re-check, re-evaluate or restate your own ")
+            append("steps halfway through, and write each number once and correctly: copy the ")
+            append("question's figures exactly rather than re-typing them. If the answer is a ")
+            append("number of days, name it plainly.]")
+          }
           if (choices) {
             // The planning step said the message gives options to choose from (an exam question).
             append("\n\n[My message gives answer options. Pick exactly ONE of those options: start your ")
             append("answer with that option, written exactly as in my message (its label and text), then ")
             append("explain in two or three sentences why it is right and, briefly, why the others are not. ")
-            append("Do not answer with something that is not one of the options.]")
+            append("Do not answer with something that is not one of the options. ")
+            append("Show the reasoning or arithmetic that decides it before you name the option.]")
           }
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
@@ -640,7 +783,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             append("\n[$skippedAudio audio clip(s) skipped: this phone loaded Jonaki AI without sound.]")
           }
         }
-        compactIfNeeded(text.length + images.size * IMAGE_TOKENS * CHARS_PER_TOKEN + audio.sumOf { it.size } / 32000 * AUDIO_TOKENS_PER_SEC * CHARS_PER_TOKEN)
+        compactIfNeeded(text, images.size * IMAGE_TOKENS + audio.sumOf { it.size } / 32000 * AUDIO_TOKENS_PER_SEC)
         val start = System.currentTimeMillis()
         onAnswerStart?.invoke(answerId, voice)
         // The agent loop (agent.py agent_chat): answer, or call a tool, read its result, and try again.
@@ -672,13 +815,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var blankRetried = false
         var rewriting = false
         var resetChat = false
+        var mathRepaired = false
         val usedOcr = ocrText.isNotBlank()
         // A Bengali question must get a Bengali answer; the model sometimes mixes in Tamil/Hindi.
         val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
         while (true) {
           var out = ""
           try {
-            val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList())
+            val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList(), think = thinkNow)
               .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
             val limit = if (rewriting) ROUND_TIMEOUT_MS else FIRST_TIMEOUT_MS
             kotlinx.coroutines.withTimeout(limit) {
@@ -896,9 +1040,51 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             prompt = context + prompt
             continue
           }
+          // Arithmetic the answer itself states is re-checked here. A small model writes
+          // "2/14 × 9800 = 1142.86" (true value 1400) and then trusts its own wrong number, so a
+          // wrong line gets exactly one repair pass with the correct value named.
+          if (!mathRepaired && out.isNotBlank()) {
+            val bad = runCatching { MathCheck.wrongClaims(out) }.getOrDefault(emptyList())
+            if (bad.isNotEmpty()) {
+              mathRepaired = true
+              val lines = bad.take(3).joinToString("\n") {
+                "${it.expression} = ${fmtNum(it.stated)} should be ${fmtNum(it.actual)}"
+              }
+              Log.i("ChatController", "math repair:\n$lines")
+              update(answerId) {
+                it.copy(tools = it.tools + ToolUse("calculate", "recheck", false, lines))
+              }
+              rewriting = true
+              status = "Checking the arithmetic…"
+              val prev = out.take(2500)
+              gemma.startChat(emptyList(), "")
+              resetChat = true
+              prompt = "My question:\n${(topic ?: display).take(600)}\n\n" +
+                "Your previous answer:\n$prev\n\n" +
+                "The arithmetic in it is wrong on these lines (computed by the phone):\n$lines\n\n" +
+                "Fix those numbers in the answer. Keep it the SAME length or shorter: do not start " +
+                "the working again and do not re-derive anything that was already correct, because a " +
+                "longer answer will simply be cut off again, which is what happened above. Do not " +
+                "mention this check, and do not restate the same wrong numbers. Write in the same " +
+                "language as before."
+              continue
+            }
+          }
           break
         }
         val secs = (System.currentTimeMillis() - start) / 1000.0
+        // A multiple-choice answer must name ONE option, and the same one throughout. The model
+        // opened with "(খ) অম্বর" and then argued for "অবনী" in the body, so the visible first line
+        // contradicted the reasoning below it.
+        if (choices && !testCode && !voice) {
+          update(answerId) { line ->
+            val fixed = Tools.settleChoice(line.text, topic ?: display)
+            if (fixed != line.text) {
+              Log.i("ChatController", "choice settled: ${line.text.take(40)} -> ${fixed.take(40)}")
+              line.copy(text = fixed)
+            } else line
+          }
+        }
         if (!testCode) update(answerId) {
           // Never leave an empty bubble: a last-resort message is better than silence.
           val shown = if (it.text.isBlank()) {
@@ -972,17 +1158,18 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       return
     }
     running = ref
-    busy = true
     runningFigures = true
     figuresPreempted = false
-    status = "Finding a picture…"
+    // Deliberately NOT busy, and no status line. The answer is already written and read; fetching a
+    // picture for it is background decoration, and marking it busy left a spinner over a finished
+    // answer for as long as the picture search ran.
     job = scope.launch {
       var usedModel = false
       try {
         var queries = Tutor.figureQueries(answer.text)
         if (queries.isEmpty() && answer.text.length > 100) {
           // Model-driven fallback: one short call decides whether a picture would help.
-          status = "Looking for a picture…"
+          // No status line: the answer is already delivered, so the header must stay quiet.
           val marker = runCatching {
             gemma.oneShot(
               "A student asked: ${question.take(300)}\nThe answer:\n${answer.text.take(1600)}\n\n" +
@@ -1012,7 +1199,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           if (only != null && n != only) { (figStates[k] as? FigState.Done)?.let { used.add(it.figure.file) }; continue }
           if (!Tools.online(app)) { figStates[k] = FigState.None("Pictures need internet", retry = true); continue }
           figStates[k] = FigState.Busy("Finding a real picture of “$q” and checking it fits…")
-          status = "Finding a picture…"
+          // The status line is the header's "what am I waiting for". This is not the answer, so it
+          // stays empty and the progress shows on the figure card itself.
           val f = findOne(k, q, question, used) { usedModel = true }
           if (f != null) { figStates[k] = FigState.Done(f); used.add(f.file) }
         }
@@ -1031,8 +1219,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // The picture checks used the model on their own; give the chat its memory back.
         withContext(kotlinx.coroutines.NonCancellable) { if (usedModel) gemma.startChat(history(lines)) }
         Log.i("Figures", "finish id=$answerId")
-        busy = false
-        status = null
+        runningFigures = false
+        // This path no longer owns `busy`: it runs after the answer is delivered, and clearing it
+        // here would also cut a real answer short if a new turn had started meanwhile.
         endRun(ref)
       }
     }
@@ -1214,8 +1403,6 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("Example of the format:\nSEARCH: NONE\nCALC: (3.5 * 12) / 4\nCHOICES: NO")
     }
     val raw = runCatching { gemma.oneShot(ask, 90) }.getOrDefault("")
-    // oneShot closed the chat; reopen it without the turn being answered now.
-    gemma.startChat(history(before))
     status = null
     fun field(name: String) = raw.lineSequence().map { it.trim().trim('*', '`', '-').trim() }
       .firstOrNull { it.startsWith("$name:", ignoreCase = true) }
@@ -1226,6 +1413,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       field("CALC")?.trimEnd(';')?.take(300),
       field("CHOICES")?.startsWith("Y", ignoreCase = true) == true,
     )
+    // oneShot closed the chat; reopen it without the turn being answered now. Arithmetic gets the
+    // tighter sampler here, at the one rebuild this turn already needs, so no extra one is paid.
+    gemma.startChat(history(before), numeric = plan.calc != null)
     Log.i("ChatController", "plan: search='${plan.query}' calc='${plan.calc}' choices=${plan.choices}")
     return plan
   }
@@ -1264,9 +1454,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     Log.i("ChatController", "calc: $expr = $value ($ok)")
     // Rounded here: the model copies a long number like 42.164708 wrongly; 42.1647 it gets right.
     value = Tools.tidyNumber(value)
-    return if (ok) "[Background for you, not to be quoted: the phone's calculator worked out $expr = $value. " +
-      "If that expression is exactly the calculation my message asks for, use this number instead of doing the " +
-      "sum yourself; if it is not, ignore it and work the answer out step by step.]" else ""
+    // Phrased as an instruction to copy, not as background: told it was "background, not to be
+    // quoted", the model ignored the number and re-typed the question's 9800 as 98800.
+    return if (ok) calcNoteFor(expr, value) else ""
   }
 
   /**
@@ -1412,6 +1602,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     sendToModel(user.display, user.text, user.topic, rebuild = before, attachments = user.attachments)
   }
 
+  /** A number as a person would read it: no trailing ".0", at most 4 decimals. */
+  private fun fmtNum(v: Double): String {
+    if (v.isNaN() || v.isInfinite()) return "?"
+    return if (v == v.toLong().toDouble()) v.toLong().toString()
+    else "%.4f".format(v).trimEnd('0').trimEnd('.')
+  }
+
   private fun friendlyError(t: Throwable): String {
     val m = t.message ?: t.javaClass.simpleName
     return if ("token" in m.lowercase()) "This chat is too long for the model. Tap New chat to start fresh." else m
@@ -1420,17 +1617,18 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   // ---------- keeping the chat inside the model's memory ----------
 
   /**
-   * When the 4096-token window is nearly full, older turns are summarised so the chat
+   * When the window is nearly full, older turns are summarised so the chat
    * can go on (same idea as agent.py fit_context). The newest turns stay word for word.
    */
-  private suspend fun compactIfNeeded(newChars: Int) {
-    val reserve = 1100 // room for the reply
-    val need = gemma.tokensUsed + newChars / CHARS_PER_TOKEN + reserve
+  private suspend fun compactIfNeeded(text: String, extraTokens: Int = 0) {
+    val reserve = 600 // room for the reply
+    val perToken = charsPerToken(text)
+    val need = gemma.tokensUsed + (text.length / perToken).toInt() + extraTokens + reserve
     if (need <= gemma.maxTokens) return
     // Everything before the user turn just added.
     val past = work.lines.dropLast(2).filter { (it.who == Who.USER || it.who == Who.MODEL) && it.done && it.error == null }
     if (past.size < 2) return
-    val budget = (gemma.maxTokens - reserve) * CHARS_PER_TOKEN
+    val budget = ((gemma.maxTokens - reserve) * perToken).toInt()
     var keepFrom = past.size
     var size = 0
     for (i in past.indices.reversed()) {
@@ -1530,6 +1728,71 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   companion object {
     const val CHARS_PER_TOKEN = 4
+
+    /** Every number of two or more digits in [text], ASCII-normalised. */
+    fun numbersOf(text: String): List<String> =
+      Regex("[0-9]{2,}").findAll(MathCheck.asciiDigits(text)).map { it.value }.toList()
+
+    /**
+     * Does [expr] only use numbers the question actually gave? A calculator result is only worth
+     * trusting when the expression was built from the question's own figures; an invented constant
+     * (9800 / **19**) silently poisons an answer that is then told the number is verified.
+     *
+     * A legitimately derived value (the ratio total 2+3+4+5 = 14) is also rejected, on purpose: the
+     * calculator is then skipped for that step and the model shows its own working, which it does
+     * correctly. Percentages may use 100, which the question implies without writing it.
+     */
+    fun groundedCalc(question: String, expr: String): Boolean {
+      val available = numbersOf(question).toSet() + "100"
+      return numbersOf(expr).all { it in available }
+    }
+
+    /**
+     * A direct calculation the model could read off the question, as opposed to a formula it composed.
+     *
+     * This is the difference between arithmetic being verified and the *setup* being verified. For
+     * "3 men or 5 boys take 20 days, how long do 4 men and 10 boys take?" the planner wrote
+     * `20 * 3 * 4 / (3 * 20 + 5 * 20)` = 1.5, and every number in it appears in the question, so
+     * `groundedCalc` accepted it. The phone then confirmed 1.5 is the right answer *to that
+     * expression* — and the answer dutifully built a derivation around 1.5 instead of 6 days.
+     *
+     * A grouped sub-expression with an operator inside ("(3 * 20 + 5 * 20)") is a composed formula,
+     * so its result is only ever offered to the model as something to check, never as the answer.
+     */
+    fun directCalc(expr: String): Boolean {
+      val e = expr.trim()
+      if (e.isEmpty()) return false
+      // A grouped sub-expression that itself contains an operator means the model built a formula.
+      if (Regex("""\([^()]*[+\-*/×÷][^()]*\)""").containsMatchIn(e)) return false
+      return true
+    }
+
+    /** How the calculator's result is described to the model. */
+    fun calcNoteFor(expr: String, value: String): String =
+      if (directCalc(expr)) {
+        "[Verified arithmetic from the phone's calculator, which cannot be wrong: $expr = $value. " +
+          "Wherever this calculation appears in your answer, copy that number exactly as written " +
+          "here. Do not recompute it, do not re-type it from memory, and do not change a single " +
+          "digit. Work out any other steps separately.]"
+      } else {
+        "[The phone evaluated this expression: $expr = $value. The arithmetic is correct, but the " +
+          "expression itself may not be the right one for the question. Check that it models what " +
+          "the question asks. If it does, use the number. If it does not, ignore it completely and " +
+          "work the answer out yourself from the question.]"
+      }
+
+    /**
+     * Characters per token for this text. Four is a Latin-script figure; Bengali packs far more
+     * characters into a token's worth of bytes, so counting a Bengali prompt at 4 under-estimates it
+     * and the window can overflow without the app ever noticing. All-Latin gives 4.0, all-Bengali 2.0.
+     */
+    fun charsPerToken(text: String): Double {
+      if (text.isEmpty()) return CHARS_PER_TOKEN.toDouble()
+      var bengali = 0
+      for (c in text) if (c in '\u0980'..'\u09FF') bengali++
+      val share = bengali.toDouble() / text.length
+      return CHARS_PER_TOKEN - 2.0 * share
+    }
     const val BENGALI_RULE = "Answer in Bengali (বাংলা), even if I write in English. Use Bengali words; " +
       "keep only technical terms, formulas, code, [FIGURE: ...] search words and the NEXT: line's format " +
       "as they are; write the NEXT questions in Bengali."
@@ -1617,8 +1880,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
  * Tamil or Hindi word; a Bengali answer should not show them. Latin text, digits and symbols
  * (chemical formulas, arrows) are kept.
  */
-internal fun keepBengali(text: String): String =
-  text.filter { c ->
+internal fun keepBengali(text: String): String = healGarbled(text).filter { c ->
     val code = c.code
     // Keep Bengali; drop the foreign writing systems the small model sometimes slips into.
     code in 0x0980..0x09FF || (
@@ -1633,4 +1895,27 @@ internal fun keepBengali(text: String): String =
         code !in 0xAC00..0xD7AF    // Hangul
       )
   }
+
+/**
+ * Repairs a Bengali letter glued onto a Latin word ("ধvariables"), which the model produces when it
+ * starts writing a Bengali heading and switches to an English term mid-word. `keepBengali` cannot see
+ * this: every character is Bengali or Latin, so nothing is foreign. The stray letter is dropped and
+ * the English word kept, which is what the sentence was reaching for.
+ */
+internal fun healGarbled(text: String): String {
+  if (text.isEmpty()) return text
+  // Bengali letter(s) directly followed by two or more Latin letters, with no infix vowel sign after.
+  val glued = Regex("""([\u0980-\u09FF]+)([A-Za-z]{2,})""")
+  var out = glued.replace(text) { m ->
+    val bengali = m.groupValues[1]
+    val latin = m.groupValues[2]
+    // Keep the Bengali when it is a real word attached to a unit ("৩৫kg" is fine; "ধvariables" is not).
+    if (bengali.all { it in '\u0995'..'\u09B9' } && bengali.length <= 1) latin else "$bengali$latin"
+  }
+  // The reverse shape: a Latin word running straight into Bengali letters ("variablesধ").
+  out = Regex("""([A-Za-z]{2,})([\u0980-\u09FF]{1,2})\b""").replace(out) { m ->
+    if (m.groupValues[2].length <= 1) m.groupValues[1] else m.value
+  }
+  return out
+}
 

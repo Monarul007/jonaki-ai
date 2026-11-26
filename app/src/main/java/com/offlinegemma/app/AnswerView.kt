@@ -122,7 +122,7 @@ fun Answer(
       Spacer(Modifier.width(8.dp))
       Text("Jonaki AI", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    if (line.tools.isNotEmpty()) ToolChips(line.tools)
+    if (line.tools.isNotEmpty() || line.thought.isNotBlank()) WorkPanel(line)
     if (line.text.isEmpty() && !line.done) {
       Shimmer(
         chat?.queuePosition(line.id)?.let { ahead ->
@@ -282,16 +282,19 @@ private fun SmallAction(icon: androidx.compose.ui.graphics.vector.ImageVector, l
 }
 
 /**
- * The steps behind an answer (search, pages read, study files…) as ONE quiet line, the way a
- * coding agent shows its work: "✓ Searched the web · read 3 pages ›". Tap it to see each step;
- * tap a page to open it. While a step runs, the line shows that step with a spinner.
+ * Every step behind an answer, in the order it happened: the decision ("search: … · calculate: …"),
+ * the model's own reasoning, then each tool call with its result. Collapsed to one quiet line while
+ * reading, the way a coding agent shows its work. The answer below stays the main thing.
  */
 @Composable
-fun ToolChips(tools: List<ToolUse>) {
+fun WorkPanel(line: ChatLine) {
   var open by remember { mutableStateOf(false) }
   val uri = LocalUriHandler.current
   val muted = MaterialTheme.colorScheme.onSurfaceVariant
-  val running = tools.lastOrNull { it.ok == null }
+  // A finished answer must never show a spinner: once the reply is done, nothing is still running,
+  // whatever a step's `ok` was left as.
+  val running = if (line.done) null else line.tools.lastOrNull { it.ok == null }
+  val steps = line.tools.size + if (line.thought.isNotBlank()) 1 else 0
   Column {
     Row(
       Modifier
@@ -301,15 +304,25 @@ fun ToolChips(tools: List<ToolUse>) {
         .padding(end = 6.dp),
       verticalAlignment = Alignment.CenterVertically,
     ) {
-      StepMark(running?.ok ?: if (tools.all { it.ok == false }) false else true, muted)
+      StepMark(running?.ok ?: if (line.tools.isNotEmpty() && line.tools.all { it.ok == false }) false else true, muted)
       Spacer(Modifier.width(8.dp))
       Text(
-        if (running != null) toolLabel(running) else toolSummary(tools),
-        style = MaterialTheme.typography.labelLarge,
+        when {
+          running != null -> toolLabel(running)
+          line.thought.isNotBlank() -> "Worked through it · $steps steps"
+          else -> toolSummary(line.tools)
+        },
+        style = MaterialTheme.typography.labelMedium,
         color = muted,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier.weight(1f, fill = false),
+      )
+      Text(
+        if (open) "hide" else "show",
+        style = MaterialTheme.typography.labelSmall,
+        color = muted.copy(alpha = 0.7f),
+        modifier = Modifier.padding(start = 8.dp),
       )
       Icon(
         if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
@@ -319,27 +332,52 @@ fun ToolChips(tools: List<ToolUse>) {
       )
     }
     androidx.compose.animation.AnimatedVisibility(visible = open) {
-      // One step per row, indented under a thin line.
       Row(Modifier.padding(start = 7.dp, top = 2.dp).height(IntrinsicSize.Min)) {
         Box(Modifier.width(2.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
-        Column(Modifier.padding(start = 12.dp)) {
-          for (t in tools) {
+        Column(Modifier.padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+          // The model's reasoning first when it reasoned, in the words it actually used.
+          if (line.thought.isNotBlank()) {
+            // `ok = null` means "still running", so passing it unconditionally left this row
+            // spinning forever after the answer had already been served.
+            StepRow(if (line.done) true else null, "Reasoning", line.thought.trim().take(4000), muted) { }
+          }
+          for (t in line.tools) {
             val link = t.detail.takeIf { t.name == "web_fetch" && it.startsWith("http") }
-            Row(
-              Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(6.dp))
-                .then(if (link != null) Modifier.clickable(onClickLabel = "Open page") { runCatching { uri.openUri(link) } } else Modifier)
-                .heightIn(min = 32.dp),
-              verticalAlignment = Alignment.CenterVertically,
-            ) {
-              StepMark(t.ok, muted)
-              Spacer(Modifier.width(8.dp))
-              Text(toolLabel(t), style = MaterialTheme.typography.labelMedium, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            StepRow(if (line.done) (t.ok ?: true) else t.ok, toolLabel(t), t.result.trim(), muted) {
+              if (link != null) runCatching { uri.openUri(link) }
             }
           }
         }
       }
+    }
+  }
+}
+
+/** One step: mark, label, and (when there is one) the detail it produced. */
+@Composable
+private fun StepRow(ok: Boolean?, label: String, detail: String, muted: androidx.compose.ui.graphics.Color, onTap: () -> Unit) {
+  Column(
+    Modifier
+      .fillMaxWidth()
+      .clip(RoundedCornerShape(6.dp))
+      .clickable(enabled = true, onClickLabel = "Step detail") { onTap() }
+      .padding(vertical = 3.dp),
+  ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+      StepMark(ok, muted)
+      Spacer(Modifier.width(8.dp))
+      Text(label, style = MaterialTheme.typography.labelMedium, color = muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+    if (detail.isNotBlank()) {
+      Text(
+        // Kept short: the panel is for orientation, not for reading a whole page again.
+        detail.replace(Regex("\\s+"), " ").take(220),
+        style = MaterialTheme.typography.bodySmall,
+        color = muted.copy(alpha = 0.75f),
+        maxLines = 4,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.padding(start = 24.dp, top = 1.dp),
+      )
     }
   }
 }
@@ -368,12 +406,13 @@ internal fun toolSummary(tools: List<ToolUse>): String {
   if (pages > 0) parts += if (pages == 1) "read 1 page" else "read $pages pages"
   else if (count("web_fetch") > 0) parts += "couldn't open the pages"
   if (count("run_js") + count("run_python") > 0) parts += "ran the code"
-  val known = setOf("knowledge", "ocr", "read_document", "calculate", "web_search", "web_fetch", "run_js", "run_python")
+  val known = setOf("plan", "knowledge", "ocr", "read_document", "calculate", "web_search", "web_fetch", "run_js", "run_python")
   tools.filter { it.name !in known }.map { it.name }.distinct().forEach { parts += it }
   return parts.joinToString(" · ").replaceFirstChar { it.uppercase() }
 }
 
 private fun toolLabel(t: ToolUse) = when (t.name) {
+  "plan" -> "Decided: ${t.detail}"
   "web_search" -> "Searched: ${t.detail}"
   "web_fetch" -> "Read: ${t.detail.removePrefix("https://").removePrefix("www.")}"
   "ocr" -> if (t.ok == false) "Couldn't read the picture" else "Read the picture"
@@ -432,6 +471,14 @@ private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () 
   val scheme = MaterialTheme.colorScheme
   val colors = Markdown.InlineColors(scheme.onSurface, scheme.surfaceContainerHigh, scheme.primary, scheme.tertiary)
   val body = MaterialTheme.typography.bodyLarge
+  // The answer itself, set apart from the steps above it by a hairline and a slightly larger
+  // type: with a work panel open, the reader must never wonder where the answer begins.
+  if (line.thought.isNotBlank() || line.tools.isNotEmpty()) {
+    androidx.compose.material3.HorizontalDivider(
+      color = scheme.outlineVariant.copy(alpha = 0.5f),
+      modifier = Modifier.padding(top = 2.dp, bottom = 2.dp),
+    )
+  }
   for (b in blocks) {
     when (b) {
       is Markdown.Block.Para -> Text(Markdown.inline(b.text, colors), style = body)
