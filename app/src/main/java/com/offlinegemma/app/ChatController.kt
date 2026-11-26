@@ -578,9 +578,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // the number out exactly and the answer uses it. Offline too: the calculator needs no internet.
         val numbered = mutableListOf<Source>()
         var calcNote = ""
+        var choices = false
         val canSearch = !offline && prefs.webSearch && Tools.online(app)
         val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode) {
           val plan = planAnswer(topic, canSearch)
+          choices = plan.choices
           plan.calc?.let { calcNote = calculate(answerId, it) }
           if (canSearch && plan.query != null) {
             researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
@@ -599,6 +601,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             append("something, say so in one short sentence and answer that part from your own knowledge. ")
             append("Never invent a source or a number. Do not add a list of sources or links at the end: ")
             append("the app shows them under your answer.]")
+          }
+          if (choices) {
+            // The planning step said the message gives options to choose from (an exam question).
+            append("\n\n[My message gives answer options. Pick exactly ONE of those options: start your ")
+            append("answer with that option, written exactly as in my message (its label and text), then ")
+            append("explain in two or three sentences why it is right and, briefly, why the others are not. ")
+            append("Do not answer with something that is not one of the options.]")
           }
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
@@ -1167,7 +1176,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
    * to [MAX_WEB_PAGES] result pages at the same time, and returns them numbered [1], [2], … for the
    * answer to cite. [numbered] gets the same sources in the same order. "" = nothing to add.
    */
-  private class AnswerPlan(val query: String?, val calc: String?)
+  private class AnswerPlan(val query: String?, val calc: String?, val choices: Boolean)
 
   /**
    * One short model step before a typed question is answered: what to search for (or NONE, e.g. for
@@ -1184,19 +1193,25 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val ask = buildString {
       if (recent.isNotBlank()) append("Our conversation so far:\n$recent\n\n")
       append("Today is ${today()}. My new message: ${question.take(400)}\n\n")
-      append("Plan your answer. Reply with exactly two lines.\n")
+      append("Plan your answer. Reply with exactly three lines.\n")
       if (canSearch) {
         append("SEARCH: one web search query (3 to 10 words) that would find the facts needed, in the language ")
         append("that will find the best pages; or NONE. A search helps for facts, people, places, events, dates, ")
         append("prices, news, how things work, and anything you are not fully sure about. It does not help for ")
-        append("greetings, chit-chat, jokes, stories or poems, rewriting or translating my own text, or pure sums.\n")
+        append("greetings, chit-chat, jokes, stories or poems, rewriting or translating my own text, or pure sums. ")
+        append("If my message gives answer options, search for what decides between them.\n")
       } else {
         append("SEARCH: NONE\n")
       }
-      append("CALC: if the answer needs arithmetic or a unit conversion, the sum itself as one JavaScript ")
-      append("expression: numbers, + - * / ( ) and Math functions only; no words, no units, no = sign and ")
-      append("not the result. Otherwise NONE.\n")
-      append("Example of the format:\nSEARCH: NONE\nCALC: (3.5 * 12) / 4")
+      // Only a sum my message already spells out: for a word problem the model wrote a wrong
+      // set-up ((30*5)/6 for an age puzzle) and the exact-looking result made the answer worse.
+      append("CALC: only if my message itself states a plain calculation whose numbers and operations ")
+      append("are all given (a percentage, a unit conversion, an arithmetic expression), that sum as one ")
+      append("JavaScript expression: numbers, + - * / ( ) and Math functions only; no words, no units, no = ")
+      append("sign, not the result. For a word problem that has to be set up first (unknown ages, shares, ")
+      append("work and time, equations), and for everything else, NONE.\n")
+      append("CHOICES: YES if my message gives answer options to choose from (such as (a)…(d) or (ক)…(ঘ)), else NO.\n")
+      append("Example of the format:\nSEARCH: NONE\nCALC: (3.5 * 12) / 4\nCHOICES: NO")
     }
     val raw = runCatching { gemma.oneShot(ask, 90) }.getOrDefault("")
     // oneShot closed the chat; reopen it without the turn being answered now.
@@ -1206,8 +1221,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       .firstOrNull { it.startsWith("$name:", ignoreCase = true) }
       ?.substringAfter(':')?.trim()?.trim('"', '`', '\'')?.trim()
       ?.takeIf { it.isNotBlank() && !it.trimEnd('.', '!').equals("NONE", ignoreCase = true) }
-    val plan = AnswerPlan(field("SEARCH")?.take(150)?.takeIf { canSearch }, field("CALC")?.trimEnd(';')?.take(300))
-    Log.i("ChatController", "plan: search='${plan.query}' calc='${plan.calc}'")
+    val plan = AnswerPlan(
+      field("SEARCH")?.take(150)?.takeIf { canSearch },
+      field("CALC")?.trimEnd(';')?.take(300),
+      field("CHOICES")?.startsWith("Y", ignoreCase = true) == true,
+    )
+    Log.i("ChatController", "plan: search='${plan.query}' calc='${plan.calc}' choices=${plan.choices}")
     return plan
   }
 
@@ -1245,8 +1264,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     Log.i("ChatController", "calc: $expr = $value ($ok)")
     // Rounded here: the model copies a long number like 42.164708 wrongly; 42.1647 it gets right.
     value = Tools.tidyNumber(value)
-    return if (ok) "[Calculator, run on this phone: $expr = $value. This result is exact: use it (rounded sensibly) " +
-      "instead of working the sum out yourself.]" else ""
+    return if (ok) "[Background for you, not to be quoted: the phone's calculator worked out $expr = $value. " +
+      "If that expression is exactly the calculation my message asks for, use this number instead of doing the " +
+      "sum yourself; if it is not, ignore it and work the answer out step by step.]" else ""
   }
 
   /**
