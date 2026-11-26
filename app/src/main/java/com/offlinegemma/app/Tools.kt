@@ -178,21 +178,32 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
 
   private const val UA = "Mozilla/5.0 (Linux; Android 16) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
 
+  private const val APP_UA = "JonakiAI/1.0 (Android study assistant)"
+
   data class Page(val title: String, val text: String)
 
   suspend fun webFetch(context: Context, url0: String, query: String, maxChars: Int = 3000): Page = withContext(Dispatchers.IO) {
     val url = if (Regex("^https?://").containsMatchIn(url0)) url0 else "https://$url0"
-    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-      connectTimeout = 15_000
-      readTimeout = 15_000
-      instanceFollowRedirects = true
-      setRequestProperty("User-Agent", UA)
+    // Some sites refuse an app that calls itself a browser (Wikipedia answers 429); others refuse
+    // anything that is not one. Ask as a browser first, and once more under the app's own name.
+    fun get(agent: String): Triple<Int, String, ByteArray?> {
+      val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 15_000
+        readTimeout = 15_000
+        instanceFollowRedirects = true
+        setRequestProperty("User-Agent", agent)
+      }
+      return try {
+        val code = conn.responseCode
+        Triple(code, conn.contentType.orEmpty(), if (code in 200..299) conn.inputStream.use { s -> s.readNBytes(3_000_000) } else null)
+      } finally {
+        conn.disconnect()
+      }
     }
-    val (ctype, bytes) = try {
-      (conn.contentType.orEmpty() to conn.inputStream.use { s -> s.readNBytes(3_000_000) })
-    } finally {
-      conn.disconnect()
-    }
+    var got = get(UA)
+    if (got.first == 403 || got.first == 429) got = get(APP_UA)
+    val ctype = got.second
+    val bytes = got.third ?: throw java.io.IOException("the site answered HTTP ${got.first}")
     // A PDF goes through the phone's document reader, like an attached file.
     if ("pdf" in ctype.lowercase() || url.lowercase().substringBefore('?').endsWith(".pdf")) {
       val f = File(context.cacheDir, "web_${UUID.randomUUID().toString().take(8)}.pdf")
@@ -223,6 +234,27 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
 
   private fun unescape(s: String) = Html.fromHtml(s, Html.FROM_HTML_MODE_LEGACY).toString()
 
+  /** False for the app's own "could not read this page" messages from [webFetch]. */
+  fun usablePage(text: String) = text.isNotBlank() &&
+    !text.startsWith("The page came back almost empty") && !text.startsWith("This PDF has no text layer")
+
+  /**
+   * Turns the answer's citations [1], [2] (any digits, Bengali ones too) into links to those
+   * sources, so a tap opens the page. A number with no matching source stays plain text.
+   */
+  fun linkCitations(text: String, sources: List<Source>): String {
+    if (sources.isEmpty()) return text
+    // "[1]", and lists such as "[1, 5]" (each number becomes its own link).
+    return Regex("""\[(\p{Nd}{1,2}(?:\s*[,،]\s*\p{Nd}{1,2})*)\](?!\()""").replace(text) { m ->
+      val nums = m.groupValues[1].split(',', '،').map { it.trim() }
+      val urls = nums.map { d ->
+        val n = d.fold(0) { acc, ch -> acc * 10 + Character.getNumericValue(ch) }
+        sources.getOrNull(n - 1)?.url?.takeIf { it.startsWith("http") }
+      }
+      if (urls.any { it == null }) m.value else nums.zip(urls).joinToString("") { (d, u) -> "[[$d]]($u)" }
+    }
+  }
+
   /** agent.py _html_to_lines: drop scripts and page chrome, keep the article, one line per block. */
   fun htmlToLines(html: String): List<String> {
     var c = html.replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), "")
@@ -241,7 +273,7 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
   fun pickLines(lines: List<String>, query: String, maxChars: Int): String {
     val text = lines.joinToString("\n")
     if (text.length <= maxChars || query.isBlank()) return text.take(maxChars)
-    val words = Regex("\\w{3,}").findAll(query.lowercase()).map { it.value }.toSet()
+    val words = Regex("[\\p{L}\\p{M}\\p{Nd}]{3,}").findAll(query.lowercase()).map { it.value }.toSet()
     if (words.isEmpty()) return text.take(maxChars)
     val scored = lines.mapIndexedNotNull { i, ln -> val low = ln.lowercase(); val s = words.count { it in low }; if (s > 0) s to i else null }
     if (scored.isEmpty()) return text.take(maxChars)

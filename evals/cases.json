@@ -120,6 +120,45 @@
     {
       "id": "typed_web_implicit", "ask": "বাংলাদেশের বর্তমান অর্থমন্ত্রী কে?", "must_search": true,
       "points": [], "manual_fact_check": true
-    }
+    },
+    {
+      "id": "web_worldcup", "ask": "Who won the 2022 FIFA World Cup final, and how did the match end?", "must_search": true,
+      "points": [
+        {"point": "Argentina won", "any": ["Argentina"]},
+        {"point": "it was 3-3 after extra time", "any": ["3-3", "3–3", "3 - 3"]},
+        {"point": "Argentina won on penalties", "any": ["penalt", "shootout", "shoot-out"]}
+      ],
+      "wrong": ["France won", "Croatia won"],
+      "search_terms": ["2022", "World Cup", "final"]
+    },
+    {
+      "id": "web_bn_architect", "ask": "জাতীয় সংসদ ভবনের নকশা কে করেছিলেন?", "must_search": true,
+      "points": [
+        {"point": "Louis Kahn designed it", "any": ["লুই কান", "লুইস কান", "লুই আই কান", "Louis Kahn", "Louis I. Kahn"]}
+      ],
+      "search_terms": ["সংসদ", "Kahn", "parliament", "Sangsad"]
+    },
+    {
+      "id": "web_no_search_poem", "ask": "Write a four-line poem about rain.", "must_not_search": true,
+      "points": []
+    },
+    {"id": "gp_math_percent", "ask": "What is 17% of 2350?", "must_not_search": true, "points": [{"point": "399.5", "any": ["399.5", "399.50"]}]},
+    {"id": "gp_miles_km", "ask": "How many kilometres is 26.2 miles?", "points": [{"point": "about 42.2 km", "any": ["42.1", "42.2", "42.16"]}]},
+    {"id": "gp_translate_bn", "ask": "Translate to Bengali: The library opens at nine in the morning.", "must_not_search": true, "points": [{"point": "library", "any": ["গ্রন্থাগার", "লাইব্রেরি", "পাঠাগার"]}, {"point": "nine", "any": ["নয়", "৯", "নটা", "নয়টা"]}]},
+    {"id": "gp_hello", "ask": "Hi! How are you today?", "must_not_search": true, "points": []},
+    {"id": "gp_bn_poem", "ask": "বৃষ্টি নিয়ে দুই লাইনের একটি কবিতা লেখো", "must_not_search": true, "points": [{"point": "about rain", "any": ["বৃষ্টি", "বর্ষা", "মেঘ", "বাদল"]}]},
+    {"id": "gp_sky_blue", "ask": "Why is the sky blue?", "points": [{"point": "sunlight scatters off air molecules", "any": ["scatter"]}, {"point": "blue light (short wavelength) scatters most", "any": ["wavelength", "shorter"]}]},
+    {"id": "gp_bn_tagore_nobel", "ask": "রবীন্দ্রনাথ ঠাকুর কবে নোবেল পুরস্কার পান?", "points": [{"point": "1913", "any": ["১৯১৩", "1913"]}, {"point": "for Gitanjali / literature", "any": ["গীতাঞ্জলি", "সাহিত্য", "Gitanjali"]}]},
+    {"id": "gp_bn_language_movement", "ask": "ভাষা আন্দোলনে শহীদ দিবস কোন তারিখে?", "points": [{"point": "21 February", "any": ["২১ ফেব্রুয়ারি", "২১শে ফেব্রুয়ারি", "একুশে ফেব্রুয়ারি", "21 February"]}, {"point": "1952", "any": ["১৯৫২", "1952"]}]},
+    {"id": "gp_false_premise", "ask": "In which year did Bangladesh win the FIFA World Cup?", "points": [{"point": "says Bangladesh never won / never qualified", "any": ["never", "has not", "hasn't", "not won", "not qualified", "no "]}], "wrong": ["Bangladesh won the FIFA World Cup in"]},
+    {"id": "gp_dengue", "ask": "What are the warning signs of severe dengue?", "points": [{"point": "severe stomach pain", "any": ["abdominal", "stomach", "belly"]}, {"point": "persistent vomiting", "any": ["vomit"]}, {"point": "bleeding (gums/nose)", "any": ["bleed"]}, {"point": "see a doctor / hospital", "any": ["doctor", "hospital", "medical"]}]},
+    {"id": "gp_passport", "ask": "How do I apply for an e-passport in Bangladesh?", "points": [{"point": "online application", "any": ["online", "epassport.gov.bd", "website"]}, {"point": "NID / birth certificate", "any": ["NID", "national ID", "birth certificate"]}, {"point": "pay the fee", "any": ["fee", "pay"]}, {"point": "biometrics at passport office", "any": ["biometric", "fingerprint", "photo"]}], "search_terms": ["passport"]},
+    {"id": "gp_usd_bdt", "ask": "What is today's exchange rate from US dollar to Bangladeshi taka?", "must_search": true, "points": [{"point": "gives a number around 115-130 taka", "any": ["11", "12", "13"]}], "manual_fact_check": true},
+    {"id": "gp_dhaka_weather", "ask": "ঢাকার আজকের আবহাওয়া কেমন?", "must_search": true, "points": [], "manual_fact_check": true},
+    {"id": "gp_bd_pm", "ask": "Who is the current Prime Minister of Bangladesh?", "must_search": true, "points": [], "manual_fact_check": true},
+    {"id": "gp_wc_2026", "ask": "Who won the 2026 FIFA World Cup?", "must_search": true, "points": [], "manual_fact_check": true},
+    {"id": "gp_followup_wife", "before": ["Who wrote the national anthem of Bangladesh?"], "ask": "In which year was he born?", "points": [{"point": "1861 (Tagore)", "any": ["1861", "১৮৬১"]}], "search_terms": ["Tagore", "Rabindranath", "রবীন্দ্রনাথ", "1861", "born"]},
+    {"id": "gp_ambiguous_mercury", "ask": "How hot is Mercury?", "points": [{"point": "the planet: about 430 °C day side", "any": ["430", "427", "800"]}, {"point": "very cold at night (about -180 °C)", "any": ["-180", "−180", "-173", "−173", "-290", "night"]}]},
+    {"id": "gp_code_python", "ask": "Write a Python function that checks if a word is a palindrome.", "must_not_search": true, "points": [{"point": "a def", "any": ["def "]}, {"point": "reverses the string", "any": ["[::-1]", "reversed"]}]}
   ]
 }

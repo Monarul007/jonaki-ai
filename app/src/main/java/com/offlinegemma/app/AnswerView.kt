@@ -1,5 +1,12 @@
 package com.offlinegemma.app
 
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.ExpandLess
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -274,36 +281,95 @@ private fun SmallAction(icon: androidx.compose.ui.graphics.vector.ImageVector, l
   }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+/**
+ * The steps behind an answer (search, pages read, study files…) as ONE quiet line, the way a
+ * coding agent shows its work: "✓ Searched the web · read 3 pages ›". Tap it to see each step;
+ * tap a page to open it. While a step runs, the line shows that step with a spinner.
+ */
 @Composable
 fun ToolChips(tools: List<ToolUse>) {
-  val extra = LocalExtraColors.current
-  FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-    for (t in tools) {
-      val (bg, fg) = when (t.ok) {
-        null -> MaterialTheme.colorScheme.surfaceContainerHigh to MaterialTheme.colorScheme.onSurfaceVariant
-        true -> extra.okContainer to extra.ok
-        false -> extra.badContainer to extra.bad
-      }
-      Surface(color = bg, contentColor = fg, shape = RoundedCornerShape(50)) {
-        Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-          when (t.ok) {
-            null -> CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = fg)
-            true -> Icon(Icons.Rounded.Check, "worked", Modifier.size(14.dp))
-            false -> Icon(Icons.Rounded.Close, "failed", Modifier.size(14.dp))
+  var open by remember { mutableStateOf(false) }
+  val uri = LocalUriHandler.current
+  val muted = MaterialTheme.colorScheme.onSurfaceVariant
+  val running = tools.lastOrNull { it.ok == null }
+  Column {
+    Row(
+      Modifier
+        .clip(RoundedCornerShape(8.dp))
+        .clickable(onClickLabel = if (open) "Hide steps" else "Show steps") { open = !open }
+        .heightIn(min = 36.dp)
+        .padding(end = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      StepMark(running?.ok ?: if (tools.all { it.ok == false }) false else true, muted)
+      Spacer(Modifier.width(8.dp))
+      Text(
+        if (running != null) toolLabel(running) else toolSummary(tools),
+        style = MaterialTheme.typography.labelLarge,
+        color = muted,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f, fill = false),
+      )
+      Icon(
+        if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+        null,
+        Modifier.padding(start = 2.dp).size(18.dp),
+        tint = muted,
+      )
+    }
+    androidx.compose.animation.AnimatedVisibility(visible = open) {
+      // One step per row, indented under a thin line.
+      Row(Modifier.padding(start = 7.dp, top = 2.dp).height(IntrinsicSize.Min)) {
+        Box(Modifier.width(2.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+        Column(Modifier.padding(start = 12.dp)) {
+          for (t in tools) {
+            val link = t.detail.takeIf { t.name == "web_fetch" && it.startsWith("http") }
+            Row(
+              Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(6.dp))
+                .then(if (link != null) Modifier.clickable(onClickLabel = "Open page") { runCatching { uri.openUri(link) } } else Modifier)
+                .heightIn(min = 32.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              StepMark(t.ok, muted)
+              Spacer(Modifier.width(8.dp))
+              Text(toolLabel(t), style = MaterialTheme.typography.labelMedium, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
           }
-          Spacer(Modifier.width(6.dp))
-          Text(
-            toolLabel(t),
-            style = MaterialTheme.typography.labelMedium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.widthIn(max = 240.dp),
-          )
         }
       }
     }
   }
+}
+
+/** ✓ worked, ✕ failed, spinner = still running. Grey, so the answer stays the main thing. */
+@Composable
+private fun StepMark(ok: Boolean?, color: androidx.compose.ui.graphics.Color) {
+  val extra = LocalExtraColors.current
+  when (ok) {
+    null -> CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = color)
+    true -> Icon(Icons.Rounded.Check, "worked", Modifier.size(16.dp), tint = extra.ok)
+    false -> Icon(Icons.Rounded.Close, "failed", Modifier.size(16.dp), tint = extra.bad)
+  }
+}
+
+/** All steps in one line: "Checked your study files · searched the web · read 3 pages". */
+internal fun toolSummary(tools: List<ToolUse>): String {
+  val parts = mutableListOf<String>()
+  fun count(name: String) = tools.count { it.name == name }
+  if (count("knowledge") > 0) parts += "study files"
+  if (count("ocr") > 0) parts += if (tools.any { it.name == "ocr" && it.ok == true }) "read the picture" else "couldn't read the picture"
+  if (count("read_document") > 0) parts += "read the file"
+  count("web_search").let { if (it == 1) parts += "searched the web" else if (it > 1) parts += "searched $it times" }
+  val pages = tools.count { it.name == "web_fetch" && it.ok == true }
+  if (pages > 0) parts += if (pages == 1) "read 1 page" else "read $pages pages"
+  else if (count("web_fetch") > 0) parts += "couldn't open the pages"
+  if (count("run_js") + count("run_python") > 0) parts += "ran the code"
+  val known = setOf("knowledge", "ocr", "read_document", "web_search", "web_fetch", "run_js", "run_python")
+  tools.filter { it.name !in known }.map { it.name }.distinct().forEach { parts += it }
+  return parts.joinToString(" · ").replaceFirstChar { it.uppercase() }
 }
 
 private fun toolLabel(t: ToolUse) = when (t.name) {
@@ -317,20 +383,30 @@ private fun toolLabel(t: ToolUse) = when (t.name) {
   else -> t.name
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+/** The answer's sources in ONE sideways-scrolling row, numbered like its citations [1], [2]. */
 @Composable
 private fun Sources(sources: List<Source>) {
   val uri = LocalUriHandler.current
-  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-    Text("Sources", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-      for (s in sources) {
-        AssistChip(
-          onClick = { runCatching { uri.openUri(s.url) } },
-          label = { Text(s.title.ifBlank { s.url }, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 220.dp)) },
-          leadingIcon = { Icon(Icons.Rounded.Language, null, Modifier.size(16.dp)) },
-        )
-      }
+  androidx.compose.foundation.lazy.LazyRow(
+    horizontalArrangement = Arrangement.spacedBy(6.dp),
+    modifier = Modifier.semantics { contentDescription = "Sources" },
+  ) {
+    items(sources.size) { i ->
+      val s = sources[i]
+      val host = runCatching { java.net.URI(s.url).host?.removePrefix("www.") }.getOrNull()
+      AssistChip(
+        onClick = { runCatching { uri.openUri(s.url) } },
+        label = {
+          Text(
+            "${i + 1}  " + (host ?: s.title.ifBlank { s.url }),
+            style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 180.dp),
+          )
+        },
+        leadingIcon = { Icon(Icons.Rounded.Language, null, Modifier.size(14.dp)) },
+      )
     }
   }
 }
@@ -349,7 +425,8 @@ private fun RunOutput(text: String) {
 /** The reply's Markdown, drawn block by block. */
 @Composable
 private fun AnswerBody(line: ChatLine, onDemoError: (String) -> Unit, onFix: () -> Unit, canAct: Boolean, chat: ChatController?, onOpen: (ViewItem) -> Unit) {
-  val blocks = remember(line.text) { Markdown.parse(line.text) }
+  // Citations [1], [2] become links to the sources listed under the answer.
+  val blocks = remember(line.text, line.sources) { Markdown.parse(Tools.linkCitations(line.text, line.sources)) }
   val scheme = MaterialTheme.colorScheme
   val colors = Markdown.InlineColors(scheme.onSurface, scheme.surfaceContainerHigh, scheme.primary, scheme.tertiary)
   val body = MaterialTheme.typography.bodyLarge

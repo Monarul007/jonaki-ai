@@ -225,7 +225,8 @@ object Tutor {
 
   // ---- Web search for "Check facts" (same DuckDuckGo method as agent.py web_search) ----
 
-  data class SearchResult(val text: String, val sources: List<Source>)
+  /** [snippets] holds each source's short search-result text, in the same order as [sources]. */
+  data class SearchResult(val text: String, val sources: List<Source>, val snippets: List<String> = emptyList())
 
   suspend fun webSearch(query: String, max: Int = 5): SearchResult = withContext(Dispatchers.IO) {
     val url = "https://html.duckduckgo.com/html/?q=" + URLEncoder.encode(query, "UTF-8")
@@ -243,6 +244,7 @@ object Tutor {
       .findAll(page).toList()
     val out = mutableListOf<String>()
     val found = mutableListOf<Source>()
+    val snippets = mutableListOf<String>()
     for ((k, m) in heads.withIndex()) {
       var link = unescape(m.groupValues[1])
       Regex("uddg=([^&]+)").find(link)?.let { link = URLDecoder.decode(it.groupValues[1], "UTF-8") }
@@ -256,10 +258,11 @@ object Tutor {
       if (title.isNotEmpty()) {
         out.add("${out.size + 1}. $title\n   $snip\n   $link")
         found.add(Source(title, link))
+        snippets.add(snip)
       }
       if (out.size >= max) break
     }
-    SearchResult(if (out.isEmpty()) "No results for '$query'." else "Results for '$query':\n" + out.joinToString("\n"), found)
+    SearchResult(if (out.isEmpty()) "No results for '$query'." else "Results for '$query':\n" + out.joinToString("\n"), found, snippets)
   }
 
   private fun unescape(s: String) = Html.fromHtml(s, Html.FROM_HTML_MODE_LEGACY).toString()

@@ -11,6 +11,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -468,7 +470,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     target.lines.add(ChatLine(answerId, Who.MODEL, "", done = false))
     // Saved now so a brand-new chat is in the history list while it is being answered.
     save(target)
-    val begin = { runAnswer(target, answerId, display, modelText, topic, rebuild, sources, attachments, voice, testCode, codeFixed, agent, links, linkQuery, offline) }
+    val begin = { runAnswer(target, answerId, display, modelText, topic, rebuild, sources, attachments, voice, testCode, codeFixed, agentAllowed = agent, links, linkQuery, offline) }
     if (running != null || busy) {
       // The model is busy: wait for the turn (a running picture search steps aside).
       queue.add(Queued(target, answerId, userLine.id, figures = false, start = begin))
@@ -492,7 +494,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     voice: Boolean,
     testCode: Boolean,
     codeFixed: Boolean,
-    agent: Boolean,
+    agentAllowed: Boolean,
     links: List<String>,
     linkQuery: String,
     offline: Boolean,
@@ -567,9 +569,28 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             Log.i("ChatController", "knowledge: ${hits.size} passages for '${q.take(80)}'")
           }
         }
+
+        // A typed question is looked up first, like a search engine's AI mode: the model says what
+        // to search for (or that no search would help), the app reads the best few pages at once,
+        // and the answer cites them by number. Photos, files, links and voice have their own paths.
+        val numbered = mutableListOf<Source>()
+        val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode &&
+          !offline && prefs.webSearch && Tools.online(app)
+        ) {
+          researchWeb(answerId, topic, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
+        } else ""
+        // With sources already in hand, the tool-calling instructions only cost room and time.
+        val agent = agentAllowed && webBlock.isBlank()
         val text = buildString {
           append(modelText)
           if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
+          if (webBlock.isNotBlank()) {
+            append("\n\n").append(webBlock)
+            append("\n\n[Now answer exactly what my message above asks, using these sources. Right after each fact you took ")
+            append("from a source, put its number in brackets, like [1]. If the sources do not cover ")
+            append("something, say so in one short sentence and answer that part from your own knowledge. ")
+            append("Never invent a source or a number.]")
+          }
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
             if (images.isNotEmpty()) {
@@ -629,7 +650,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var refused = false
         var reviewed = false
         var researchRounds = 0
-        var sourceSearchTried = false
+        var sourceSearchTried = webBlock.isNotBlank()
         var blankRetried = false
         var rewriting = false
         var resetChat = false
@@ -710,7 +731,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // final word. Throw the refusal away (do not save or speak it), look it up, ask once more.
           // Only throw the answer away when a lookup can actually add evidence. Offline (or with
           // web search off), the honest answer is better than a retry that may come back empty.
-          if (!refused && researchRounds == 0 && !reviewed && !offline && prefs.webSearch &&
+          if (!refused && researchRounds == 0 && !reviewed && !offline && prefs.webSearch && webBlock.isBlank() &&
             out.isNotBlank() && Tools.isUnsure(out)
           ) {
             refused = true
@@ -857,7 +878,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           } else it.text
           it.copy(text = shown)
         }
-        update(answerId) { it.copy(done = true, seconds = secs, sources = found.distinctBy { s -> s.url }.take(4)) }
+        update(answerId) {
+          val shownSources = if (numbered.isNotEmpty()) numbered.toList() else found.distinctBy { s -> s.url }.take(4)
+          it.copy(done = true, seconds = secs, sources = shownSources)
+        }
         // Voice answers are spoken: never leave a picture marker (or a figure card) behind.
         if (voice) update(answerId) { line ->
           val clean = line.text.replace(Tutor.FIG_INLINE, "").replace(Regex("\\n{3,}"), "\n\n").trimEnd()
@@ -1117,6 +1141,102 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     }
   }
 
+  /**
+   * The AI-mode lookup for a typed question. One short model step decides what to search for
+   * (or NONE when a search would not help, e.g. a greeting or a poem); the app searches, reads up
+   * to [MAX_WEB_PAGES] result pages at the same time, and returns them numbered [1], [2], … for the
+   * answer to cite. [numbered] gets the same sources in the same order. "" = nothing to add.
+   */
+  private suspend fun researchWeb(
+    answerId: Long, question: String, numbered: MutableList<Source>, found: MutableList<Source>, budget: Int,
+  ): String {
+    status = "Deciding what to look up…"
+    val before = work.lines.dropLast(2)
+    // The last exchange, so a follow-up ("and his wife?") becomes a query that stands on its own.
+    val recent = before.filter { it.done && it.error == null && (it.who == Who.USER || it.who == Who.MODEL) }
+      .takeLast(2)
+      .joinToString("\n") { l -> if (l.who == Who.USER) "Me: " + l.display.take(200) else "You: " + l.text.take(300) }
+    val raw = runCatching {
+      gemma.oneShot(
+        (if (recent.isNotBlank()) "Our conversation so far:\n$recent\n\n" else "") +
+          "Today is ${today()}. My new message: ${question.take(400)}\n\n" +
+          "Would a web search help you answer this correctly? It helps for facts, people, places, events, " +
+          "dates, numbers, prices, news, how things work, and anything you are not fully sure about. It " +
+          "does not help for greetings, chit-chat, jokes, stories or poems, rewriting or translating my " +
+          "own text, or sums you can work out yourself.\n" +
+          "If it helps, reply with one web search query (3 to 10 words) that would find the answer, in " +
+          "the language that will find the best pages. If it does not help, reply NONE.",
+        40,
+      )
+    }.getOrDefault("")
+    // oneShot closed the chat; reopen it without the turn being answered now.
+    gemma.startChat(history(before))
+    status = null
+    val query = firstLine(raw)
+    Log.i("ChatController", "web research query='$query'")
+    if (query.isBlank() || query.trimEnd('.', '!').equals("NONE", ignoreCase = true)) return ""
+
+    status = "Searching the web…"
+    update(answerId) { it.copy(tools = it.tools + ToolUse("web_search", query)) }
+    val search = runCatching { Tutor.webSearch(query) }.getOrNull()
+    val results = search?.text ?: "Error: the search did not answer"
+    update(answerId) { line ->
+      line.copy(tools = line.tools.dropLast(1) + ToolUse("web_search", query, !search?.sources.isNullOrEmpty(), results.take(2000)))
+    }
+    if (search == null || search.sources.isEmpty()) { status = null; return "" }
+    found.addAll(search.sources)
+    // Every result is a numbered source. Its short search text is always kept: it often holds the
+    // answer even when the page itself cannot be read (a video, or a page that needs JavaScript).
+    val hits = search.sources.zip(search.snippets + List(search.sources.size) { "" }).take(MAX_WEB_SOURCES)
+      .filter { (s, _) -> s.url.startsWith("http") }
+    // One page per website: three pages from the same site are one opinion, not three.
+    val picks = hits.map { it.first }
+      .distinctBy { runCatching { java.net.URI(it.url).host }.getOrNull() ?: it.url }.take(MAX_WEB_PAGES)
+    status = "Reading ${picks.size} pages…"
+    val pages = kotlinx.coroutines.coroutineScope {
+      picks.map { s ->
+        async {
+          s.url to runCatching {
+            kotlinx.coroutines.withTimeout(WEB_PAGE_TIMEOUT_MS) { Tools.webFetch(app, s.url, "$query $question", budget) }
+          }.getOrNull()
+        }
+      }.awaitAll()
+    }.toMap()
+    status = null
+    val read = pages.filterValues { p -> p != null && Tools.usablePage(p.text) }.mapValues { it.value!!.text }
+    update(answerId) { line ->
+      line.copy(tools = line.tools + picks.map { s ->
+        val p = pages[s.url]
+        ToolUse("web_fetch", s.url, s.url in read, p?.text?.take(2000) ?: "could not open the page")
+      })
+    }
+    Log.i("ChatController", "web research: ${read.size}/${picks.size} pages read for '$query'")
+    // The room left after the short search texts is shared by the pages that could be read.
+    val snippetRoom = hits.sumOf { it.second.length + it.first.title.length + 12 }
+    val perPage = ((budget - snippetRoom) / read.size.coerceAtLeast(1)).coerceAtLeast(300)
+    return buildString {
+      append("[Web sources for my message, found just now. They are numbered; cite them by number. ")
+      append("Today is ${today()}. Some sources may be old: when they disagree, trust the newest one.]\n")
+      hits.forEachIndexed { i, (s, snip) ->
+        numbered.add(s)
+        append("\n[${i + 1}] ${s.title}\n")
+        if (snip.isNotBlank()) append(snip).append("\n")
+        read[s.url]?.let { append(it.take(perPage).trim()).append("\n") }
+      }
+    }
+  }
+
+  /** Today's date in words, so the model can tell old sources from new ("current", "latest", "this year"). */
+  private fun today(): String =
+    java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale.ENGLISH).format(java.util.Date())
+
+  /** The model's one-line reply without quotes, bullets or a "Query:" label. */
+  private fun firstLine(raw: String): String =
+    raw.lineSequence().map { it.trim().trim('"', '`', '*', '\'').trim() }
+      .firstOrNull { it.isNotBlank() }.orEmpty()
+      .let { l -> if (l.indexOf(':') in 0..24) l.substringAfter(':').trim().trim('"', '\'') else l }
+      .take(150)
+
   /** Runs one tool call and shows it as a chip (green = worked, red = failed). */
   private suspend fun runTool(answerId: Long, c: Tools.Call, question: String, found: MutableList<Source>): String {
     val detail = when (c.name) {
@@ -1320,6 +1440,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       "keep only technical terms, formulas, code, [FIGURE: ...] search words and the NEXT: line's format " +
       "as they are; write the NEXT questions in Bengali."
     const val MAX_TOOL_TURNS = 4
+    /** Pages read at the same time for a typed question (AI-mode lookup). */
+    const val MAX_WEB_PAGES = 3
+    /** Search results given to the answer as numbered sources (their short text, plus the page if read). */
+    const val MAX_WEB_SOURCES = 5
+    const val WEB_PAGE_TIMEOUT_MS = 20_000L
     /** Extra look-up/rewrite rounds after the first answer (the refusal retry counts as one). */
     const val MAX_RESEARCH_ROUNDS = 3
     const val FIRST_TIMEOUT_MS = 300_000L

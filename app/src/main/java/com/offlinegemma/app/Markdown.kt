@@ -238,7 +238,7 @@ object Markdown {
     s = Regex("""\\\[([\s\S]+?)\\\]""").replace(s) { "$MATH_ON${tex(it.groupValues[1])}$MATH_OFF" }
     s = Regex("""\$([^$\n]+?)\$""").replace(s) { "$MATH_ON${tex(it.groupValues[1])}$MATH_OFF" }
     s = Regex("""\\\(([\s\S]+?)\\\)""").replace(s) { "$MATH_ON${tex(it.groupValues[1])}$MATH_OFF" }
-    s = Regex("""\[([^\]]+)\]\((https?://[^)\s]+)\)""").replace(s) { keep(Stashed.Link(it.groupValues[1], it.groupValues[2])) }
+    s = Regex("""\[((?:[^\[\]]|\[[^\[\]]*\])+)\]\((https?://[^)\s]+)\)""").replace(s) { keep(Stashed.Link(it.groupValues[1], it.groupValues[2])) }
     s = Regex("""(?<![(\w/])(https?://[^\s)<>\]]+[^\s)<>\].,;:!?'"])""").replace(s) { keep(Stashed.Link(it.groupValues[1], it.groupValues[1])) }
     s = Regex("""\*\*([^*]+)\*\*""").replace(s) { "$BOLD_ON${it.groupValues[1]}$BOLD_OFF" }
     s = Regex("""__([^_]+)__""").replace(s) { "$BOLD_ON${it.groupValues[1]}$BOLD_OFF" }

@@ -21,7 +21,8 @@ from datetime import datetime
 
 sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
-PKG = "com.offlinegemma.app.dev"
+# JONAKI_PKG=com.offlinegemma.app for a test build installed over the real app (-PoverRelease).
+PKG = os.environ.get("JONAKI_PKG", "com.offlinegemma.app.dev")
 ACTIVITY = PKG + "/com.offlinegemma.app.MainActivity"
 CASE_TMP = "/data/local/tmp/eval_case.json"
 CASE_IN_APP = "eval_case.json"  # relative: inside the app's files dir
@@ -56,6 +57,8 @@ def push_page(name, rel):
 def run_case(case, page_uris, outdir):
     cid = case["id"]
     payload = {"id": cid, "ask": case["ask"], "web": case.get("web", True)}
+    if case.get("before"):
+        payload["before"] = case["before"]
     if case.get("page"):
         payload["image"] = page_uris[case["page"]]
     tmp = os.path.join(outdir, f"{cid}.case.json")
@@ -115,6 +118,7 @@ def score(case, result, cases_by_id):
         "search_queries": searches,
         "search_on_topic": (any(has_any(q, terms) for q in searches) if searches and terms else None),
         "must_search_ok": (bool(searches) if case.get("must_search") else None),
+        "no_search_ok": (not searches if case.get("must_not_search") else None),
         "answer_secs": result.get("answer_secs"),
         "total_secs": result.get("total_secs"),
         "words": len(text.split()),
@@ -138,6 +142,8 @@ def score(case, result, cases_by_id):
         problems.append("off-topic search")
     if checks["must_search_ok"] is False:
         problems.append("did not search")
+    if checks["no_search_ok"] is False:
+        problems.append("searched when it should not")
     if hit and sum(h["ok"] for h in hit) < max(1, round(0.75 * len(hit))):
         problems.append("missing key points")
     checks["points_detail"] = hit

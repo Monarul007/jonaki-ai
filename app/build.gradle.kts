@@ -38,9 +38,15 @@ android {
 
     buildTypes {
         debug {
-            // Test builds install next to the real app (different name and id).
-            applicationIdSuffix = ".dev"
-            manifestPlaceholders["appLabel"] = "Jonaki AI Dev"
+            if (project.hasProperty("overRelease")) {
+                // `-PoverRelease`: a test build that installs over the real app and keeps its data
+                // (the downloaded model, chats). Same id and signing key as the release build.
+                signingConfig = signingConfigs.findByName("release")
+            } else {
+                // Test builds install next to the real app (different name and id).
+                applicationIdSuffix = ".dev"
+                manifestPlaceholders["appLabel"] = "Jonaki AI Dev"
+            }
         }
         release {
             isMinifyEnabled = true

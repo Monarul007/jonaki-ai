@@ -159,6 +159,17 @@ class MainActivity : ComponentActivity() {
           return@launch
         }
       }
+      // Earlier turns of the same chat ("before"), so follow-up questions can be tested.
+      case.optJSONArray("before")?.let { turns ->
+        for (k in 0 until turns.length()) {
+          chat.sendTyped(turns.getString(k))
+          var quiet = 0
+          while (quiet < 2) {
+            kotlinx.coroutines.delay(1000)
+            quiet = if (chat.busy || !chat.canSend()) 0 else quiet + 1
+          }
+        }
+      }
       val started = System.currentTimeMillis()
       android.util.Log.i("Eval", "start $id")
       chat.sendTyped(case.getString("ask"))
