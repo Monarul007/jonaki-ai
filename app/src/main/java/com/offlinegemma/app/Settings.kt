@@ -88,4 +88,15 @@ class Prefs(context: Context) {
   var lastMode: String?
     get() = sp.getString("last_mode", null)
     set(v) = sp.edit().putString("last_mode", v).apply()
+
+  /**
+   * Which model to run. Saved by name so an unknown value (a model removed from the app) falls back
+   * to the default instead of leaving the app with nothing to load.
+   */
+  private val _model = mutableStateOf(
+    runCatching { ChatModel.valueOf(sp.getString("chat_model", null) ?: "") }.getOrDefault(ModelInfo.DEFAULT),
+  )
+  var model: ChatModel
+    get() = _model.value
+    set(v) { _model.value = v; sp.edit().putString("chat_model", v.name).apply() }
 }

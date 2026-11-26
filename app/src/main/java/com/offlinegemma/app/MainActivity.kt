@@ -105,6 +105,18 @@ class MainActivity : ComponentActivity() {
     intent.getStringExtra("theme")?.let { runCatching { app.prefs.theme = ThemeChoice.valueOf(it.uppercase()) } }
     if (intent.hasExtra("onboarded")) app.prefs.onboarded = intent.getBooleanExtra("onboarded", true)
     if (intent.hasExtra("download")) ModelDownloadWorker.start(this, app.prefs.wifiOnly)
+    // Download a named model without tapping through Settings (the eval bench uses this).
+    intent.getStringExtra("download_model")?.let { m ->
+      val target = runCatching { ChatModel.valueOf(m.uppercase()) }.getOrDefault(ModelInfo.DEFAULT)
+      ModelDownloadWorker.start(this, app.prefs.wifiOnly, target.name)
+    }
+    // Switch the running model, e.g. -e use_model E4B, without touching Settings.
+    intent.getStringExtra("use_model")?.let { m ->
+      runCatching { ChatModel.valueOf(m.uppercase()) }.getOrNull()?.let { target ->
+        app.prefs.model = target
+        app.chat.loadModel()
+      }
+    }
     intent.getStringExtra("ask")?.let { q ->
       // Waits until Gemma is loaded, then sends (a busy model queues it, like a typed question).
       lifecycleScope.launch {

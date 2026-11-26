@@ -38,19 +38,24 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
 
   override suspend fun getForegroundInfo(): ForegroundInfo = foregroundInfo(0, "Starting…")
 
-  /** Whichever file this job is for: the chat model, or the embedder used for semantic search. */
-  private fun target(ctx: Context): Target =
-    if (inputData.getString(KEY_MODEL) == MODEL_EMBEDDER) {
-      Target(
+  /**
+   * Whichever file this job is for: a chat model (chosen by name, so downloading E4B never touches
+   * the E2B file already on the phone), or the embedder used for semantic search.
+   */
+  private fun target(ctx: Context): Target {
+    val asked = inputData.getString(KEY_MODEL) ?: MODEL_GEMMA
+    if (asked == MODEL_EMBEDDER) {
+      return Target(
         name = Semantic.NAME, url = Semantic.URL, size = Semantic.SIZE_BYTES, sha = Semantic.SHA256,
         part = Semantic.partFile(ctx), file = Semantic.file(ctx),
       )
-    } else {
-      Target(
-        name = ModelInfo.NAME, url = ModelInfo.URL, size = ModelInfo.SIZE_BYTES, sha = ModelInfo.SHA256,
-        part = ModelInfo.partFile(ctx), file = ModelInfo.modelFile(ctx),
-      )
     }
+    val m = runCatching { ChatModel.valueOf(asked) }.getOrDefault(ModelInfo.DEFAULT)
+    return Target(
+      name = m.label, url = m.URL, size = m.SIZE_BYTES, sha = m.SHA256,
+      part = ModelInfo.partFile(ctx, m), file = ModelInfo.file(ctx, m),
+    )
+  }
 
   private data class Target(
     val name: String, val url: String, val size: Long, val sha: String,
@@ -221,15 +226,17 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
     const val KEY_ERROR = "error"
     const val KEY_ERROR_CODE = "error_code"
     const val KEY_MODEL = "model"
+    /** The value that means "the default chat model"; any ChatModel name is also accepted. */
     const val MODEL_GEMMA = "gemma"
     const val MODEL_EMBEDDER = "embedder"
     const val WORK_EMBEDDER = "embedder-download"
-    const val PHASE_DOWNLOADING = "downloading"
-    const val PHASE_VERIFYING = "verifying"
-    const val ERR_STORAGE = "storage"
-    const val ERR_NETWORK = "network"
-    const val ERR_CHECKSUM = "checksum"
-    const val ERR_OTHER = "other"
+
+    /** One queue per file, so downloading E4B cannot cancel a running E2B download. */
+    private fun workName(model: String) = when (model) {
+      MODEL_EMBEDDER -> WORK_EMBEDDER
+      MODEL_GEMMA -> WORK_NAME
+      else -> "model-download-$model"
+    }
 
     /** Starts (or restarts with new Wi-Fi setting) a download. The partial file is kept. */
     fun start(context: Context, wifiOnly: Boolean, model: String = MODEL_GEMMA) {
@@ -242,17 +249,19 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
         )
         .setInputData(workDataOf(KEY_MODEL to model))
         .build()
-      WorkManager.getInstance(context).enqueueUniqueWork(
-        if (model == MODEL_EMBEDDER) WORK_EMBEDDER else WORK_NAME,
-        ExistingWorkPolicy.REPLACE,
-        request,
-      )
+      WorkManager.getInstance(context)
+        .enqueueUniqueWork(workName(model), ExistingWorkPolicy.REPLACE, request)
     }
 
     /** Pause: stops the download but keeps the partial file to resume later. */
     fun pause(context: Context, model: String = MODEL_GEMMA) {
-      WorkManager.getInstance(context)
-        .cancelUniqueWork(if (model == MODEL_EMBEDDER) WORK_EMBEDDER else WORK_NAME)
+      WorkManager.getInstance(context).cancelUniqueWork(workName(model))
     }
+    const val PHASE_DOWNLOADING = "downloading"
+    const val PHASE_VERIFYING = "verifying"
+    const val ERR_STORAGE = "storage"
+    const val ERR_NETWORK = "network"
+    const val ERR_CHECKSUM = "checksum"
+    const val ERR_OTHER = "other"
   }
 }

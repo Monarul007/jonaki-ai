@@ -18,8 +18,10 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteForever
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.MenuBook
@@ -124,7 +126,34 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
   ) { pad ->
     Column(Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
       Section("Model")
-      InfoRow(Icons.Rounded.Memory, ModelInfo.NAME, if (app.gemma.isLoaded) "Running on: ${app.gemma.mode}" else "Not loaded")
+      InfoRow(Icons.Rounded.Memory, prefs.model.label, if (app.gemma.isLoaded) "Running on: ${app.gemma.mode}" else "Not loaded")
+      // One row per model. Downloading another model never removes the one already here, and each
+      // can be deleted on its own, so trying the larger model cannot cost the working one.
+      for (m in ChatModel.entries) {
+        val here = ModelInfo.isDownloaded(context, m)
+        val running = prefs.model == m
+        val note = when {
+          here && running -> "Installed and running. ${m.speed}."
+          here -> "Installed, ${formatBytes(m.SIZE_BYTES)}. ${m.speed}. Tap to use it."
+          else -> "Not installed · ${formatBytes(m.SIZE_BYTES)} · ${m.speed}"
+        }
+        ActionRow(
+          icon = if (running) Icons.Rounded.CheckCircle else Icons.Rounded.Download,
+          title = m.label + if (running) " — in use" else "",
+          body = note,
+          enabled = !chat.busy,
+        ) {
+          when {
+            // Use it: swap the model and reload, keeping every other model on the phone.
+            here && !running -> {
+              prefs.model = m
+              chat.loadModel()
+            }
+            !here -> ModelDownloadWorker.start(context, prefs.wifiOnly, m.name)
+            else -> Unit
+          }
+        }
+      }
       if (ram < ModelInfo.MIN_RAM_BYTES) {
         InfoRow(Icons.Rounded.Speed, "This phone is on the slow side", "${formatBytes(ram)} of memory. Answers come a few words a second, and long chats are summarised sooner.")
       }
@@ -209,7 +238,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
         else ModelDownloadWorker.start(context, prefs.wifiOnly, ModelDownloadWorker.MODEL_EMBEDDER)
       }
       ActionRow(Icons.Rounded.DeleteForever, "Delete all chats", enabled = chat.chats.isNotEmpty() && !chat.busy) { confirmChats = true }
-      ActionRow(Icons.Rounded.DeleteForever, "Delete model", "Frees ${formatBytes(ModelInfo.SIZE_BYTES)}. You'll need to download it again.", enabled = !chat.busy) { confirmModel = true }
+      ActionRow(Icons.Rounded.DeleteForever, "Delete ${prefs.model.label}", "Frees ${formatBytes(prefs.model.SIZE_BYTES)}. Other installed models stay.", enabled = !chat.busy) { confirmModel = true }
 
       Section("About")
       ActionRow(Icons.Rounded.AutoAwesome, "About and licences", "Version ${BuildConfig.VERSION_NAME}", onClick = onAbout)
@@ -240,16 +269,33 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
     )
   }
   if (confirmModel) {
+    val victim = prefs.model
+    val others = ChatModel.entries.filter { it != victim && ModelInfo.isDownloaded(context, it) }
     AlertDialog(
       onDismissRequest = { confirmModel = false },
-      title = { Text("Delete the model?") },
-      text = { Text("This frees ${formatBytes(ModelInfo.SIZE_BYTES)}. Your chats stay, but you need to download the model again to use Jonaki AI.") },
+      title = { Text("Delete ${victim.label}?") },
+      text = {
+        Text(
+          "This frees ${formatBytes(victim.SIZE_BYTES)}. Your chats stay." +
+            // Say plainly that the other model survives, since that is the whole point of the
+            // per-model delete, and switch to it rather than leaving the app with nothing to run.
+            if (others.isNotEmpty()) " ${others.joinToString(", ") { it.label }} stays on this phone and will be used instead."
+            else " You need to download a model again to use Jonaki AI.",
+        )
+      },
       confirmButton = {
         TextButton(onClick = {
           confirmModel = false
           chat.unloadModel()
-          ModelInfo.deleteAll(context)
-          onModelDeleted()
+          ModelInfo.delete(context, victim)
+          // Fall through to a model that is still installed; otherwise go back to setup.
+          val next = others.firstOrNull()
+          if (next != null) {
+            prefs.model = next
+            chat.loadModel()
+          } else {
+            onModelDeleted()
+          }
         }) { Text("Delete") }
       },
       dismissButton = { TextButton(onClick = { confirmModel = false }) { Text("Keep") } },

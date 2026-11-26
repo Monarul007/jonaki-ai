@@ -34,10 +34,17 @@ import kotlinx.coroutines.withContext
  */
 class GemmaEngine(private val context: Context, private val prefs: Prefs) {
 
-  val modelFile: File = ModelInfo.modelFile(context)
+  /** The file and window of whichever model the user chose. Read at load time, not cached. */
+  val model: ChatModel get() = prefs.model
+  val modelFile: File get() = ModelInfo.file(context, model)
 
-  /** How many tokens (word pieces) the model can hold. Bigger phones get more. */
-  val maxTokens = if (ModelInfo.totalRamBytes(context) >= ModelInfo.MIN_RAM_BYTES) 8192 else 4096
+  /**
+   * How many tokens (word pieces) the model can hold. The larger model carries a smaller window:
+   * its weights are ~1 GB bigger, and weights plus KV cache must fit in the same process. A phone
+   * below the recommended RAM halves the E2B window as before.
+   */
+  val maxTokens: Int
+    get() = model.maxTokens.let { if (ModelInfo.totalRamBytes(context) >= ModelInfo.MIN_RAM_BYTES) it else it / 2 }
 
   private var engine: Engine? = null
   private var conversation: Conversation? = null
@@ -268,6 +275,12 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     initialMessages = history,
     samplerConfig = if (numeric) SAMPLER_PRECISE else SAMPLER,
     // Reasoning goes to its own channel, so it can never leak into the answer or the TTS.
+    //
+    // Declaring this always looked harmless (a place to put reasoning that thinking was supposed to
+    // switch off) and it is not: with `enableThinking = false` the model still wrote to the channel,
+    // so reasoning was paid for and hidden. Getting rid of the channel for normal answers made the
+    // reasoning spill into the visible text instead — worse to read. So the channel stays, and the
+    // rule is now "if this model reasons, let thinking be on and show it": see ChatController.
     channels = listOf(Channel(THOUGHT_CHANNEL, "<|channel>thought\n", "<|channel|>")),
     thinkingConfig = ThinkingConfig(
       enableThinking = think,
