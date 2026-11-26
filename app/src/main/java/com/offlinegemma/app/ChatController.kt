@@ -573,23 +573,32 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // A typed question is looked up first, like a search engine's AI mode: the model says what
         // to search for (or that no search would help), the app reads the best few pages at once,
         // and the answer cites them by number. Photos, files, links and voice have their own paths.
+        // One short planning step also says whether the answer needs a calculation: a small model
+        // gets sums wrong while sounding sure (17% of 2350 came out as 409.5), so the phone works
+        // the number out exactly and the answer uses it. Offline too: the calculator needs no internet.
         val numbered = mutableListOf<Source>()
-        val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode &&
-          !offline && prefs.webSearch && Tools.online(app)
-        ) {
-          researchWeb(answerId, topic, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
+        var calcNote = ""
+        val canSearch = !offline && prefs.webSearch && Tools.online(app)
+        val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode) {
+          val plan = planAnswer(topic, canSearch)
+          plan.calc?.let { calcNote = calculate(answerId, it) }
+          if (canSearch && plan.query != null) {
+            researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
+          } else ""
         } else ""
         // With sources already in hand, the tool-calling instructions only cost room and time.
         val agent = agentAllowed && webBlock.isBlank()
         val text = buildString {
           append(modelText)
           if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
+          if (calcNote.isNotBlank()) append("\n\n").append(calcNote)
           if (webBlock.isNotBlank()) {
             append("\n\n").append(webBlock)
             append("\n\n[Now answer exactly what my message above asks, using these sources. Right after each fact you took ")
             append("from a source, put its number in brackets, like [1]. If the sources do not cover ")
             append("something, say so in one short sentence and answer that part from your own knowledge. ")
-            append("Never invent a source or a number.]")
+            append("Never invent a source or a number. Do not add a list of sources or links at the end: ")
+            append("the app shows them under your answer.]")
           }
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
@@ -731,6 +740,17 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // final word. Throw the refusal away (do not save or speak it), look it up, ask once more.
           // Only throw the answer away when a lookup can actually add evidence. Offline (or with
           // web search off), the honest answer is better than a retry that may come back empty.
+          if (!refused && webBlock.isNotBlank() && out.isNotBlank() && Tools.isUnsure(out)) {
+            refused = true
+            update(answerId) { it.copy(text = "") }
+            onAnswerStart?.invoke(answerId, voice) // restart the speech without the refusal
+            status = "Reading the sources again…"
+            prompt = "The numbered sources above are real web pages read for you just now, so you do have " +
+              "this information. Answer my question from them: give the exact facts and figures they show, " +
+              "each followed by its source number like [1]. If they truly do not contain the answer, say " +
+              "which source to open and what it does show."
+            continue
+          }
           if (!refused && researchRounds == 0 && !reviewed && !offline && prefs.webSearch && webBlock.isBlank() &&
             out.isNotBlank() && Tools.isUnsure(out)
           ) {
@@ -1147,35 +1167,96 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
    * to [MAX_WEB_PAGES] result pages at the same time, and returns them numbered [1], [2], … for the
    * answer to cite. [numbered] gets the same sources in the same order. "" = nothing to add.
    */
-  private suspend fun researchWeb(
-    answerId: Long, question: String, numbered: MutableList<Source>, found: MutableList<Source>, budget: Int,
-  ): String {
-    status = "Deciding what to look up…"
+  private class AnswerPlan(val query: String?, val calc: String?)
+
+  /**
+   * One short model step before a typed question is answered: what to search for (or NONE, e.g. for
+   * a greeting or a poem) and, when the answer needs a sum, a JavaScript expression for it. The
+   * model decides both; the app only reads the two labelled lines it asked for.
+   */
+  private suspend fun planAnswer(question: String, canSearch: Boolean): AnswerPlan {
+    status = "Planning the answer…"
     val before = work.lines.dropLast(2)
     // The last exchange, so a follow-up ("and his wife?") becomes a query that stands on its own.
     val recent = before.filter { it.done && it.error == null && (it.who == Who.USER || it.who == Who.MODEL) }
       .takeLast(2)
       .joinToString("\n") { l -> if (l.who == Who.USER) "Me: " + l.display.take(200) else "You: " + l.text.take(300) }
-    val raw = runCatching {
-      gemma.oneShot(
-        (if (recent.isNotBlank()) "Our conversation so far:\n$recent\n\n" else "") +
-          "Today is ${today()}. My new message: ${question.take(400)}\n\n" +
-          "Would a web search help you answer this correctly? It helps for facts, people, places, events, " +
-          "dates, numbers, prices, news, how things work, and anything you are not fully sure about. It " +
-          "does not help for greetings, chit-chat, jokes, stories or poems, rewriting or translating my " +
-          "own text, or sums you can work out yourself.\n" +
-          "If it helps, reply with one web search query (3 to 10 words) that would find the answer, in " +
-          "the language that will find the best pages. If it does not help, reply NONE.",
-        40,
-      )
-    }.getOrDefault("")
+    val ask = buildString {
+      if (recent.isNotBlank()) append("Our conversation so far:\n$recent\n\n")
+      append("Today is ${today()}. My new message: ${question.take(400)}\n\n")
+      append("Plan your answer. Reply with exactly two lines.\n")
+      if (canSearch) {
+        append("SEARCH: one web search query (3 to 10 words) that would find the facts needed, in the language ")
+        append("that will find the best pages; or NONE. A search helps for facts, people, places, events, dates, ")
+        append("prices, news, how things work, and anything you are not fully sure about. It does not help for ")
+        append("greetings, chit-chat, jokes, stories or poems, rewriting or translating my own text, or pure sums.\n")
+      } else {
+        append("SEARCH: NONE\n")
+      }
+      append("CALC: if the answer needs arithmetic or a unit conversion, the sum itself as one JavaScript ")
+      append("expression: numbers, + - * / ( ) and Math functions only; no words, no units, no = sign and ")
+      append("not the result. Otherwise NONE.\n")
+      append("Example of the format:\nSEARCH: NONE\nCALC: (3.5 * 12) / 4")
+    }
+    val raw = runCatching { gemma.oneShot(ask, 90) }.getOrDefault("")
     // oneShot closed the chat; reopen it without the turn being answered now.
     gemma.startChat(history(before))
     status = null
-    val query = firstLine(raw)
-    Log.i("ChatController", "web research query='$query'")
-    if (query.isBlank() || query.trimEnd('.', '!').equals("NONE", ignoreCase = true)) return ""
+    fun field(name: String) = raw.lineSequence().map { it.trim().trim('*', '`', '-').trim() }
+      .firstOrNull { it.startsWith("$name:", ignoreCase = true) }
+      ?.substringAfter(':')?.trim()?.trim('"', '`', '\'')?.trim()
+      ?.takeIf { it.isNotBlank() && !it.trimEnd('.', '!').equals("NONE", ignoreCase = true) }
+    val plan = AnswerPlan(field("SEARCH")?.take(150)?.takeIf { canSearch }, field("CALC")?.trimEnd(';')?.take(300))
+    Log.i("ChatController", "plan: search='${plan.query}' calc='${plan.calc}'")
+    return plan
+  }
 
+  /** Works out [expr] in the sandboxed JavaScript runner (no network, no files). "" = no result. */
+  private suspend fun calculate(answerId: Long, first: String): String {
+    var expr = first
+    var value = ""
+    var ok = false
+    // A sum that does not run (words or units in it) gets one fix from the model, with the error.
+    for (attempt in 0..1) {
+      if (!JsRunner.runnable(expr)) return ""
+      status = "Calculating…"
+      update(answerId) { it.copy(tools = it.tools + ToolUse("calculate", expr)) }
+      val r = runCatching { JsRunner.run(app, "console.log($expr)") }
+        .getOrElse { JsRunner.Result(false, "Error: ${it.message}") }
+      value = r.output.trim()
+      ok = r.ok && value.isNotBlank() && !value.startsWith("Error") &&
+        value != "undefined" && value != "NaN" && value != "(the code printed nothing)"
+      val shown = expr
+      update(answerId) { line -> line.copy(tools = line.tools.dropLast(1) + ToolUse("calculate", shown, ok, value.take(500))) }
+      if (ok || attempt == 1) break
+      val fixed = runCatching {
+        gemma.oneShot(
+          "This JavaScript expression failed:\n$expr\nError: ${value.take(200)}\n\n" +
+            "Rewrite it as one valid JavaScript expression that computes the same number: numbers, + - * / ( ) " +
+            "and Math functions only; no words, no units, no = sign. Reply with the expression only.",
+          60,
+        )
+      }.getOrDefault("").lineSequence().map { it.trim().trim('`').trim() }.firstOrNull { it.isNotBlank() }.orEmpty().trimEnd(';')
+      gemma.startChat(history(work.lines.dropLast(2)))
+      if (fixed.isBlank() || fixed == expr) break
+      expr = fixed.take(300)
+    }
+    status = null
+    Log.i("ChatController", "calc: $expr = $value ($ok)")
+    // Rounded here: the model copies a long number like 42.164708 wrongly; 42.1647 it gets right.
+    value = Tools.tidyNumber(value)
+    return if (ok) "[Calculator, run on this phone: $expr = $value. This result is exact: use it (rounded sensibly) " +
+      "instead of working the sum out yourself.]" else ""
+  }
+
+  /**
+   * The AI-mode lookup for a typed question: searches [query], reads up to [MAX_WEB_PAGES] result
+   * pages at the same time, and returns the results numbered [1], [2], … for the answer to cite.
+   * [numbered] gets the same sources in the same order. "" = nothing to add.
+   */
+  private suspend fun researchWeb(
+    answerId: Long, question: String, query: String, numbered: MutableList<Source>, found: MutableList<Source>, budget: Int,
+  ): String {
     status = "Searching the web…"
     update(answerId) { it.copy(tools = it.tools + ToolUse("web_search", query)) }
     val search = runCatching { Tutor.webSearch(query) }.getOrNull()
@@ -1229,13 +1310,6 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** Today's date in words, so the model can tell old sources from new ("current", "latest", "this year"). */
   private fun today(): String =
     java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale.ENGLISH).format(java.util.Date())
-
-  /** The model's one-line reply without quotes, bullets or a "Query:" label. */
-  private fun firstLine(raw: String): String =
-    raw.lineSequence().map { it.trim().trim('"', '`', '*', '\'').trim() }
-      .firstOrNull { it.isNotBlank() }.orEmpty()
-      .let { l -> if (l.indexOf(':') in 0..24) l.substringAfter(':').trim().trim('"', '\'') else l }
-      .take(150)
 
   /** Runs one tool call and shows it as a chip (green = worked, red = failed). */
   private suspend fun runTool(answerId: Long, c: Tools.Call, question: String, found: MutableList<Source>): String {

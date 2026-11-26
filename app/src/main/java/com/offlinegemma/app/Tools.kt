@@ -234,6 +234,13 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
 
   private fun unescape(s: String) = Html.fromHtml(s, Html.FROM_HTML_MODE_LEGACY).toString()
 
+  /** A calculator result with at most 4 decimals and no float noise (399.50000000000006 -> 399.5). */
+  fun tidyNumber(v: String): String {
+    val d = v.toDoubleOrNull() ?: return v
+    if (d.isNaN() || d.isInfinite()) return v
+    return java.math.BigDecimal(d).setScale(4, java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+  }
+
   /** False for the app's own "could not read this page" messages from [webFetch]. */
   fun usablePage(text: String) = text.isNotBlank() &&
     !text.startsWith("The page came back almost empty") && !text.startsWith("This PDF has no text layer")

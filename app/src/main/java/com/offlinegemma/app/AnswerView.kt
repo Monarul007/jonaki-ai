@@ -362,12 +362,13 @@ internal fun toolSummary(tools: List<ToolUse>): String {
   if (count("knowledge") > 0) parts += "study files"
   if (count("ocr") > 0) parts += if (tools.any { it.name == "ocr" && it.ok == true }) "read the picture" else "couldn't read the picture"
   if (count("read_document") > 0) parts += "read the file"
+  if (count("calculate") > 0) parts += "calculated"
   count("web_search").let { if (it == 1) parts += "searched the web" else if (it > 1) parts += "searched $it times" }
   val pages = tools.count { it.name == "web_fetch" && it.ok == true }
   if (pages > 0) parts += if (pages == 1) "read 1 page" else "read $pages pages"
   else if (count("web_fetch") > 0) parts += "couldn't open the pages"
   if (count("run_js") + count("run_python") > 0) parts += "ran the code"
-  val known = setOf("knowledge", "ocr", "read_document", "web_search", "web_fetch", "run_js", "run_python")
+  val known = setOf("knowledge", "ocr", "read_document", "calculate", "web_search", "web_fetch", "run_js", "run_python")
   tools.filter { it.name !in known }.map { it.name }.distinct().forEach { parts += it }
   return parts.joinToString(" · ").replaceFirstChar { it.uppercase() }
 }
@@ -377,6 +378,7 @@ private fun toolLabel(t: ToolUse) = when (t.name) {
   "web_fetch" -> "Read: ${t.detail.removePrefix("https://").removePrefix("www.")}"
   "ocr" -> if (t.ok == false) "Couldn't read the picture" else "Read the picture"
   "run_js" -> if (t.ok == false) "Code test failed" else "Ran code"
+  "calculate" -> if (t.ok == true) "Calculated: ${t.detail} = ${t.result}" else "Calculated: ${t.detail}"
   "run_python" -> if (t.ok == false) "Python failed" else "Ran Python"
   "read_document" -> "Read: ${t.detail}"
   "knowledge" -> "Checked your study files: ${t.detail}"

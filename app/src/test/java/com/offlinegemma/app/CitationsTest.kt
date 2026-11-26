@@ -63,3 +63,12 @@ class ToolSummaryTest {
       toolSummary(listOf(ToolUse("web_search", "q", true), ToolUse("web_fetch", "https://a.example", false))))
   }
 }
+
+class TidyNumberTest {
+  @Test fun roundsFloatNoiseAndLongDecimals() {
+    assertEquals("399.5", Tools.tidyNumber("399.50000000000006"))
+    assertEquals("42.1647", Tools.tidyNumber("42.164708"))
+    assertEquals("1200", Tools.tidyNumber("1200"))
+    assertEquals("not a number", Tools.tidyNumber("not a number"))
+  }
+}
