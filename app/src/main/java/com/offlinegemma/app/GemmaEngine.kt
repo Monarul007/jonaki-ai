@@ -23,7 +23,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -181,6 +181,7 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     }
     lastThought.clear()
     val filter = if (think) ReasoningFilter() else null
+    var visible = 0
     // Thinking is switched per message, so the conversation does not have to be rebuilt (and its
     // whole history re-read) just to reason about one question.
     return chat.sendMessageAsync(
@@ -193,31 +194,47 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
         ThinkingConfig(enableThinking = true, thinkingTokenBudget = THINKING_BUDGET)
       } else null,
     )
-      // Reasoning arrives in its own channel; keep it out of the visible answer.
-      .onEach { msg ->
-        if (think) runCatching {
-          msg.channels[THOUGHT_CHANNEL]?.takeIf { it.isNotBlank() }?.let { piece ->
-            lastThought.append(piece)
-            Log.i(TAG, "thought +${piece.length} chars (total ${lastThought.length})")
-            onThought?.invoke(piece)
+      // Reasoning and the answer are one stream: the runtime sends the reasoning on the `thought`
+      // channel with the "<channel|>" marker inside it, then the rest of the answer as message text.
+      // Feeding only the body lost every thinking answer, because the marker never appears there.
+      // The channel text is fed first, in order, so the marker is seen and the answer is released.
+      .map { msg ->
+        val thought = if (think) msg.channels[THOUGHT_CHANNEL].orEmpty() else ""
+        if (thought.isNotBlank()) {
+          // The work panel shows the reasoning only, not the answer that follows the marker.
+          val reasoning = thought.substringBefore(END_MARKER)
+          if (reasoning.isNotBlank()) {
+            lastThought.append(reasoning)
+            Log.i(TAG, "thought +${reasoning.length} chars (total ${lastThought.length})")
+            onThought?.invoke(reasoning)
           }
         }
+        val piece = filter?.feed(thought + msg.toString()) ?: msg.toString()
+        visible += piece.length
+        piece
       }
-      // The message text carries the reasoning AND the answer: "…<channel|>answer". Everything
-      // before the marker is reasoning, so nothing is shown until the answer actually starts.
-      .map { msg -> filter?.feed(msg.toString()) ?: msg.toString() }
       .filter { it.isNotEmpty() }
+      // Diagnostic: raw = characters received, visible = what reached the answer. A thinking turn
+      // with visible = 0 is the empty-bubble bug; body/tail show where the answer really was.
+      .onCompletion {
+        if (think) Log.i(TAG, "reply: raw=${filter?.raw ?: 0} visible=$visible thought=${lastThought.length}" +
+          if (visible == 0 && filter != null) " body=<${filter.held().take(160)}> tail=<${lastThought.takeLast(160)}>" else "")
+      }
       .flowOn(Dispatchers.IO)
   }
 
   /**
-   * Holds back the reasoning half of a thinking reply. The stream is "reasoning<channel|>answer",
-   * delivered in pieces, so this emits only the answer and only once it has begun.
+   * Holds back the reasoning half of a thinking reply. The stream is "reasoning<channel|>answer"
+   * (channel text first, then the body), delivered in pieces, so this emits only the answer and
+   * only once it has begun.
    */
   private class ReasoningFilter {
     private val buf = StringBuilder()
     private var cut = 0
     private var emitted = 0
+
+    /** Characters received from the model, reasoning included. */
+    val raw: Int get() = buf.length
 
     fun feed(piece: String): String {
       buf.append(piece)
@@ -230,6 +247,9 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
       emitted = buf.length
       return buf.substring(from)
     }
+
+    /** Everything still held back, for diagnostics only. Never shown as the answer. */
+    fun held(): String = if (buf.length <= emitted) "" else buf.substring(emitted)
   }
 
   /**
@@ -313,8 +333,13 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     const val THOUGHT_CHANNEL = "thought"
     private const val END_MARKER = "<channel|>"
 
-    /** Reasoning allowance per answer when thinking is on (it is slow: ~5 tokens/s on this phone). */
-    const val THINKING_BUDGET = 256
+    /**
+     * Reasoning allowance per answer when thinking is on (it is slow: ~5 tokens/s on this phone).
+     * At 256 the model was cut off exactly as it started writing the answer, and the runtime then
+     * ended the turn: every thinking answer came back empty ("reply: visible=0"). 512 lets the
+     * reasoning reach the answer.
+     */
+    const val THINKING_BUDGET = 512
 
     /** Output ceilings. Reasoning tokens come out of the same budget, so thinking needs more room. */
     const val MAX_OUTPUT = 2048

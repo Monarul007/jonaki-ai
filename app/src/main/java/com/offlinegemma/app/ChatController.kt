@@ -747,7 +747,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // questions with numbers in them, never for voice or a plain chat turn. It is switched on
         // the message itself (`gemma.send(..., think = …)`), not by rebuilding the conversation,
         // so the history is not re-read just to reason about one question.
-        val thinkNow = numericQ && prefs.thinking && !voice
+        var thinkNow = numericQ && prefs.thinking && !voice
         // Reasoning streams into the work panel as it is produced, so the user can watch the
         // model think instead of staring at a spinner. Throttled: every piece would redraw the list.
         gemma.onThought = { piece -> if (voice) Unit else update(answerId) { it.copy(thought = gemma.lastThought.toString()) } }
@@ -897,10 +897,24 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             }
             break
           }
+          // A thinking turn can end with reasoning only: the model writes its whole reply to the
+          // thought channel and never starts the answer, so the visible text is empty. Seen after a
+          // tool result ("7 × 8" → calculate → blank answer), and the empty-answer retry further
+          // down kept thinking on and failed the same way. One retry with thinking off gets it out.
+          if (out.isBlank() && thinkNow) {
+            thinkNow = false
+            status = null
+            Log.i("ChatController", "thinking produced no answer; retrying without it")
+            if (turn > 0) prompt = "Now answer my question using the tool results above."
+            continue
+          }
           if (agent) {
             val calls = Tools.parseCalls(out)
             if (calls.isNotEmpty() && turn < MAX_TOOL_TURNS) {
               turn++
+              // The reasoning has already been paid for: what is left is turning the calculator's
+              // result into a sentence, and reasoning over it only adds ~40 s on a phone.
+              thinkNow = false
               val parts = mutableListOf<String>()
               for (c in calls) parts.add("Tool result for ${c.name}:\n" + runTool(answerId, c, topic ?: asked, found).take(2400))
               val results = parts.joinToString("\n\n")

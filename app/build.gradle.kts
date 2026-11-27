@@ -1,4 +1,4 @@
-import java.util.Properties
+﻿import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 // The release key lives outside the project and is never committed.
@@ -21,8 +21,8 @@ android {
         minSdk = 31
         targetSdk = 36
         manifestPlaceholders["appLabel"] = "Jonaki AI"
-        versionCode = 15
-        versionName = "1.0.13"
+        versionCode = 16
+        versionName = "1.0.14"
     }
 
     signingConfigs {
