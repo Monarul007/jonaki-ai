@@ -804,11 +804,26 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           if (choices) {
             // The planning step said the message gives options to choose from (an exam question).
-            append("\n\n[My message gives answer options. Pick exactly ONE of those options: start your ")
+            //
+            // This instruction used to contradict itself: it said "start your answer with that
+            // option" and then "show the reasoning before you name the option". The model obeyed the
+            // second half, so answers opened with "**Calculation:**" or a paragraph of working, and
+            // the option appeared on line 2 or later. That defeated the guard that repairs an answer
+            // naming the wrong option, because the guard reads the opening line. The order is now
+            // stated once, and it is the order an exam answer actually uses.
+            append("\n\n[My message gives answer options. Pick exactly ONE of those options. Begin your ")
             append("answer with that option, written exactly as in my message (its label and text), then ")
             append("explain in two or three sentences why it is right and, briefly, why the others are not. ")
-            append("Do not answer with something that is not one of the options. ")
-            append("Show the reasoning or arithmetic that decides it before you name the option.]")
+            append("The option must be the very first line, before any working: the reader is checking ")
+            append("their answer sheet, not reading a derivation. ")
+            // The failure this addresses: asked "logx= -2 হলে x এর মান কত?" (a question whose own
+            // text is incomplete), the model silently rewrote it as "log_x(1/4) = -2" and then
+            // answered the equation it had invented. Solving a question you changed is not solving
+            // it. If a figure or symbol is missing, say so instead.
+            append("Use the question's own numbers and equation exactly as written; do not introduce a ")
+            append("value it does not contain. If the question is incomplete or unreadable, say that in ")
+            append("one sentence instead of guessing what it meant. ")
+            append("Do not answer with something that is not one of the options.]")
           }
           if (ocrText.isNotBlank()) {
             append("\n\n").append(ocrRule()).append("\n")
@@ -880,7 +895,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         while (true) {
           var out = ""
           try {
-            val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList(), think = thinkNow)
+            // A multiple-choice answer is a label plus a few sentences. Left uncapped, E4B wrote a
+            // full derivation for a one-option question: the NTRCA run took 409 s and 331 s on two
+            // of them, at the ceiling of 2048 tokens. The question and options are already in the
+            // prompt, so a tighter ceiling costs nothing but the rambling.
+            val cap = if (choices) CHOICE_MAX_OUTPUT else null
+            val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList(), think = thinkNow, maxTokens = cap)
               .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
             val limit = if (rewriting) ROUND_TIMEOUT_MS else FIRST_TIMEOUT_MS
             kotlinx.coroutines.withTimeout(limit) {
@@ -1918,6 +1938,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     const val MAX_RESEARCH_ROUNDS = 3
     const val FIRST_TIMEOUT_MS = 300_000L
     const val ROUND_TIMEOUT_MS = 180_000L
+    /**
+     * Output ceiling for a multiple-choice answer: the option, then a short reason. The observed
+     * failure was the opposite of terse — two NTRCA options questions ran to 331 s and 409 s because
+     * the model wrote a page of working for a question that only needed a choice.
+     */
+    const val CHOICE_MAX_OUTPUT = 512
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
     /** Reference passages per answer, and how much of each to include. */

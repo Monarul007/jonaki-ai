@@ -252,22 +252,35 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
   fun settleChoice(text: String, question: String): String {
     val options = optionsOf(question)
     if (options.isEmpty()) return text
-    val opening = OPENING_OPTION.find(text) ?: return text
-    // Group 2 is the option's text ("অম্বর"); group 1 is only its label letter.
-    val first = matchOption(opening.groupValues[2], options) ?: return text
-    val body = text.substring(opening.range.last + 1)
-    // Which option does the rest of the answer argue for?
-    //
+    val opening = OPENING_OPTION.find(text)
+    val bodyStart = opening?.range?.last?.plus(1) ?: 0
     // Only a commitment counts, never a bare mention: the model discusses every option, so counting
     // mentions rewrote a self-consistent answer just because the passage it quoted named another
-    // option more often. Two shapes of commitment are recognised:
-    //   1. an explicit claim — "'অবনী' সঠিক", "the correct answer is অবনী"; this outranks everything.
-    //   2. the answer finally settling on one option — "অতএব ... (ক) অবনী", "So the answer is (ক)";
-    //      this is what a model that reasoned its way to the right option actually writes, and its
-    //      opening label is often the one it first guessed.
+    // option more often.
+    val body = text.substring(bodyStart)
     val claimed = CLAIM.find(body)?.let { m -> m.groupValues.drop(2).firstOrNull { it.isNotBlank() } }
-    val argued = claimed?.let { matchOption(it, options) }
-      ?: SETTLED.find(body)?.groupValues?.get(1)?.let { matchOption("($it)", options) }
+    // A firm Bengali commitment: "সঠিক উত্তরটি হলো (গ) 10", "তাই সঠিক উত্তর হল: **(খ) 90°**".
+    val bnAnswer = BN_ANSWER.find(body)?.groupValues?.get(1)?.let { matchOption("($it)", options) }
+    // A looser settling cue ("তাই ...", "therefore ..."), fine for rewriting an opening that
+    // already states an option, not strong enough to invent one that was never stated.
+    val settled = SETTLED.find(body)?.groupValues?.get(1)?.let { matchOption("($it)", options) }
+
+    if (opening == null) {
+      // The answer reasoned its way to an option but never put it first. Surface the choice the
+      // model itself made, additively: the option line is prepended, the reasoning stays intact.
+      // Only a firm commitment justifies inventing a first line; a loose "therefore" mention does
+      // not ("আমি ভেবেছিলাম (ক) ... also relevant" is not an answer).
+      val argued = claimed?.let { matchOption(it, options) } ?: bnAnswer
+      if (argued == null) return text
+      val firstLine = "(${argued.first}) " + argued.second
+      val firstPhysical = text.trimStart('\n').lineSequence().firstOrNull()?.trim().orEmpty()
+      return if (firstPhysical.startsWith(firstLine)) text
+      else firstLine + "\n\n" + text.trimStart('\n')
+    }
+
+    // Group 2 is the option's text ("অম্বর"); group 1 is only its label letter.
+    val first = matchOption(opening.groupValues[2], options) ?: return text
+    val argued = claimed?.let { matchOption(it, options) } ?: bnAnswer ?: settled
     if (argued == null || argued == first) return text
     // Replace label AND text: swapping only the word left "(খ) অবনী", which still names the wrong
     // option letter and would be marked wrong by a reader or a scorer.
@@ -312,6 +325,15 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
 
   private val OPTION = Regex("""\(([কখগঘঙচছa-dA-D])\)\s*([^\n()কখগঘ]+)""")
   private val OPTION_LABEL = Regex("""\(([কখগঘঙচছa-dA-D])\)""")
+  /**
+   * A firm Bengali commitment to an option: "সঠিক উত্তরটি হলো **(গ) 10**", "সঠিক উত্তর হল: (খ) 90°",
+   * "উত্তর: (ক) অবনী". This is strong enough to ADD an opening line the model never wrote; the
+   * looser SETTLED below is only trusted to rewrite an opening that already names an option.
+   */
+  private val BN_ANSWER = Regex(
+    "(?:সঠিক উত্তর|সঠিক উত্তরটি|উত্তর|সঠিক বিকল্প)" +
+      "[^\\n।!]{0,25}?\\(([কখগঘঙচছa-dA-D])\\)",
+  )
   /** "(খ) অম্বর" — the option the answer opens with. */
   private val OPENING_OPTION = Regex("""^\s*\**\(([কখগঘঙচছa-dA-D])\)\s*([^\n*।]{1,40})""")
   /**

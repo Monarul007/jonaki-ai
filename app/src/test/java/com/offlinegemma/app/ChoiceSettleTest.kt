@@ -57,6 +57,30 @@ class ChoiceSettleTest {
     assertEquals(prose, Tools.settleChoice(prose, q))
   }
 
+  @Test fun proseOpenedAnswerGetsItsClosingChoicePrepended() {
+    // The exact v03 shape: the answer opens with working, closes "তাই সঠিক উত্তর (খ) 90°".
+    val rhombusQ = "রম্বসের কর্ণদ্বয়ের অন্তর্ভুক্ত কোণ কত? (ক) 45° (খ) 90° (গ) 120° (ঘ) 150°"
+    val prose = """
+      রম্বসের কর্ণদ্বয় পরস্পরকে সমদ্বিখণ্ডিত করে এবং এই কর্ণদ্বয়ের অন্তর্ভুক্ত কোণগুলি
+      পরস্পরকে লম্বভাবে ছেদ করে। তাই সঠিক উত্তর হল: **(খ) 90°**।
+    """.trimIndent()
+    val fixed = Tools.settleChoice(prose, rhombusQ)
+    assertTrue("choice not surfaced: $fixed", fixed.startsWith("(খ) 90°"))
+    // The reasoning must still be there, unchanged, under the surfaced choice.
+    assertTrue("reasoning lost", fixed.contains("সমদ্বিখণ্ডিত"))
+  }
+
+  @Test fun proseOpenedAnswerWithClearCommitmentGetsPrepended() {
+    // The v09 shape: prose opens, "সঠিক উত্তরটি হলো (গ) 10" closes.
+    val factorQ = "x2 + 5x + 6 এবং x2 + 3x + 2 এর গ.সা.গু? (ক) 2 (খ) 6 (গ) 10 (ঘ) 12"
+    val prose = """
+      প্রদত্ত রাশিমালা দুটি হলো: x^2 + 5x + 6 = (x+2)(x+3) এবং x^2 + 3x + 2 = (x+1)(x+2)।
+      সঠিক উত্তরটি হলো **(গ) 10**।
+    """.trimIndent()
+    val fixed = Tools.settleChoice(prose, factorQ)
+    assertTrue("choice not surfaced: $fixed", fixed.startsWith("(গ) 10"))
+  }
+
   @Test fun aMentionedOptionIsNotAChoice() {
     // Every option gets discussed; that alone must never move the opener.
     val discussing = """

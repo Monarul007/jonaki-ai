@@ -172,6 +172,7 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     images: List<ByteArray> = emptyList(),
     audio: List<ByteArray> = emptyList(),
     think: Boolean = thinking,
+    maxTokens: Int? = null,
   ): Flow<String> {
     val chat = checkNotNull(conversation) { "Model not loaded yet" }
     val parts = buildList<Content> {
@@ -186,7 +187,7 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     // whole history re-read) just to reason about one question.
     return chat.sendMessageAsync(
       Contents.of(parts),
-      maxOutputToken = if (think) MAX_OUTPUT_THINKING else MAX_OUTPUT,
+      maxOutputToken = maxTokens ?: if (think) MAX_OUTPUT_THINKING else MAX_OUTPUT,
       // Only sent when reasoning is actually wanted. Passing a config with enableThinking=false on
       // a conversation that declares a `thought` channel made the whole reply arrive on the channel
       // with an empty text body, so the answer rendered as nothing at all.
