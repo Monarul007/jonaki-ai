@@ -72,7 +72,7 @@ class MainActivity : ComponentActivity() {
     // the Activity - not only from the chat screen - means coming back always wakes the model
     // instead of sitting on "Waking up" forever. loadModel() is safe to call repeatedly.
     val app = application as App
-    if (ModelInfo.isDownloaded(this)) app.chat.loadModel()
+    if (ModelInfo.isDownloaded(this, app.prefs.usableModel())) app.chat.loadModel()
   }
 
   /**
@@ -252,7 +252,7 @@ class MainActivity : ComponentActivity() {
       else -> return
     }
     intent.action = null
-    screenState.value = if (ModelInfo.isDownloaded(this)) Screen.CHAT else Screen.SETUP
+    screenState.value = if (ModelInfo.isDownloaded(this, (application as App).prefs.usableModel())) Screen.CHAT else Screen.SETUP
   }
 
   /** Pictures shared from another app need photo access on Android 13+ before we can read them. */
@@ -293,10 +293,10 @@ class MainActivity : ComponentActivity() {
       }
       AppTheme(app.prefs.theme, app.prefs.dynamicColor) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-          var screen by rememberSaveable { mutableStateOf(if (ModelInfo.isDownloaded(this)) Screen.CHAT else Screen.SETUP) }
+          var screen by rememberSaveable { mutableStateOf(if (ModelInfo.isDownloaded(this, app.prefs.usableModel())) Screen.CHAT else Screen.SETUP) }
           // A test command asked for another screen.
           LaunchedEffect(screenState.value) { screenState.value?.let { screen = it; screenState.value = null } }
-          LaunchedEffect(screen) { if (screen == Screen.CHAT && !ModelInfo.isDownloaded(this@MainActivity)) screen = Screen.SETUP }
+          LaunchedEffect(screen) { if (screen == Screen.CHAT && !ModelInfo.isDownloaded(this@MainActivity, app.prefs.model)) screen = Screen.SETUP }
           BackHandler(enabled = screen == Screen.SETTINGS || screen == Screen.ABOUT) {
             screen = if (screen == Screen.ABOUT) Screen.SETTINGS else Screen.CHAT
           }

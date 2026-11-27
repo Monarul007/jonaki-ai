@@ -117,29 +117,30 @@ private fun WelcomePage(onNext: () -> Unit) {
 @Composable
 private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> Unit) {
   val context = LocalContext.current
+  val target = prefs.model
   var refresh by remember { mutableIntStateOf(0) } // bumps storage numbers after pause/cancel
   val infos by WorkManager.getInstance(context)
-    .getWorkInfosForUniqueWorkFlow(DL.WORK_NAME)
+    .getWorkInfosForUniqueWorkFlow(DL.uniqueName(target.name))
     .collectAsState(initial = emptyList())
   val info = infos.firstOrNull()
 
   val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-    DL.start(context, prefs.wifiOnly) // start either way; the notification is optional
+    DL.start(context, prefs.wifiOnly, target.name) // start either way; the notification is optional
   }
 
   fun startDownload() {
     if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-    else DL.start(context, prefs.wifiOnly)
+    else DL.start(context, prefs.wifiOnly, target.name)
   }
 
   LaunchedEffect(info?.state) {
-    if (info?.state == WorkInfo.State.SUCCEEDED && ModelInfo.isDownloaded(context)) onModelReady()
+    if (info?.state == WorkInfo.State.SUCCEEDED && ModelInfo.isDownloaded(context, target)) onModelReady()
     refresh++
   }
 
-  val partBytes = remember(refresh, info?.state) { ModelInfo.partFile(context).length() }
+  val partBytes = remember(refresh, info?.state) { ModelInfo.partFile(context, target).length() }
   val free = remember(refresh, info?.state) { ModelInfo.freeBytes(context) }
-  val needed = remember(refresh, info?.state) { ModelInfo.bytesNeeded(context) }
+  val needed = remember(refresh, info?.state) { ModelInfo.bytesNeeded(context, target) }
   val ram = remember { ModelInfo.totalRamBytes(context) }
   val extra = LocalExtraColors.current
 
@@ -150,7 +151,7 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") }
     Text("One-time download", style = MaterialTheme.typography.headlineMedium)
     Text(
-      "The Jonaki AI model is ${formatBytes(ModelInfo.SIZE_BYTES)}. It is saved inside this app only, " +
+      "The Jonaki AI model is ${formatBytes(target.SIZE_BYTES)}. It is saved inside this app only, " +
         "checked for damage, and then everything works offline.",
       style = MaterialTheme.typography.bodyLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -182,7 +183,7 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
             Text("Wi-Fi only", style = MaterialTheme.typography.titleSmall)
             Text(
               if (prefs.wifiOnly) "Waits for Wi-Fi, so it never uses mobile data."
-              else "Mobile data may cost money. Uses up to ${formatBytes(ModelInfo.SIZE_BYTES - partBytes)}.",
+              else "Mobile data may cost money. Uses up to ${formatBytes(target.SIZE_BYTES - partBytes)}.",
               style = MaterialTheme.typography.bodySmall,
               color = if (prefs.wifiOnly) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
             )
@@ -195,20 +196,20 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
     when (info?.state) {
       WorkInfo.State.RUNNING -> Running(info)
       WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
-        Progress(partBytes.toFloat() / ModelInfo.SIZE_BYTES)
+        Progress(partBytes.toFloat() / target.SIZE_BYTES)
         Text(
           if (info.runAttemptCount > 0) "Connection lost. It will carry on by itself when the network is back…"
           else if (prefs.wifiOnly) "Waiting for Wi-Fi…" else "Waiting for internet…",
           style = MaterialTheme.typography.bodyMedium,
         )
-        OutlinedButton(onClick = { DL.pause(context) }, Modifier.fillMaxWidth().height(52.dp)) { Text("Pause") }
+        OutlinedButton(onClick = { DL.pause(context, target.name) }, Modifier.fillMaxWidth().height(52.dp)) { Text("Pause") }
       }
       else -> Idle(
         info = info,
         partBytes = partBytes,
         enoughSpace = free >= needed,
         onStart = ::startDownload,
-        onDeletePart = { ModelInfo.partFile(context).delete(); refresh++ },
+        onDeletePart = { ModelInfo.partFile(context, target).delete(); refresh++ },
       )
     }
     Spacer(Modifier.height(8.dp))

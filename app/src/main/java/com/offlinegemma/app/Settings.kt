@@ -13,6 +13,7 @@ enum class ThemeChoice { SYSTEM, LIGHT, DARK }
  * (changing one redraws what uses it).
  */
 class Prefs(context: Context) {
+  private val ctxt = context.applicationContext
   private val sp = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
   private val bigPhone = ModelInfo.totalRamBytes(context) >= ModelInfo.MIN_RAM_BYTES
 
@@ -99,4 +100,19 @@ class Prefs(context: Context) {
   var model: ChatModel
     get() = _model.value
     set(v) { _model.value = v; sp.edit().putString("chat_model", v.name).apply() }
+
+  /**
+   * The model to run right now: the chosen one if its file is on the phone, otherwise any model
+   * that is installed (and remembered, so the choice sticks). With more than one model in the
+   * catalog the chosen one can be missing while another is present — the app must never sit on
+   * the download screen in that case.
+   */
+  fun usableModel(): ChatModel {
+    if (ModelInfo.isDownloaded(ctxt, model)) return model
+    ModelInfo.installed(ctxt).firstOrNull()?.let { here ->
+      model = here
+      return here
+    }
+    return model
+  }
 }

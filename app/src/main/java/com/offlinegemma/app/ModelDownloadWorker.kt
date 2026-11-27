@@ -235,8 +235,11 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
     private fun workName(model: String) = when (model) {
       MODEL_EMBEDDER -> WORK_EMBEDDER
       MODEL_GEMMA -> WORK_NAME
-      else -> "model-download-$model"
+      else -> if (model.equals(ModelInfo.DEFAULT.name, ignoreCase = true)) WORK_NAME else "model-download-$model"
     }
+
+    /** The unique-work name a screen watches to show this model's download progress. */
+    fun uniqueName(model: String) = workName(model)
 
     /** Starts (or restarts with new Wi-Fi setting) a download. The partial file is kept. */
     fun start(context: Context, wifiOnly: Boolean, model: String = MODEL_GEMMA) {
