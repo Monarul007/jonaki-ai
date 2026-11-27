@@ -65,7 +65,7 @@ object Semantic {
   internal const val MAX_CHARS = 1200
 
   private const val MAGIC = 0x4A534931
-  private const val VERSION = 1
+  private const val VERSION = 2
 
   data class Hit(val passage: Knowledge.Passage, val score: Float)
 
@@ -75,6 +75,13 @@ object Semantic {
 
   /** Vectors live next to the pack they describe. */
   private fun indexFile(context: Context) = File(context.filesDir, "semantic.index")
+
+  /** Kept while a build is in progress, so an interrupted run resumes where it stopped. */
+  private fun partialFile(context: Context) = File(context.filesDir, "semantic.index.part")
+
+  /** Every this many pieces the finished vectors are flushed, so a kill loses seconds, not minutes. */
+  private const val CHECKPOINT = 500
+  private const val PARTIAL_MAGIC = 0x4A534950
 
   @Volatile private var engine: EmbeddingEngine? = null
   private val lock = Mutex()
@@ -108,7 +115,11 @@ object Semantic {
    * most once. Returns false when the embedder is missing or the pack is empty, so the caller keeps
    * using BM25.
    */
-  suspend fun prepare(context: Context): Boolean = lock.withLock {
+  /**
+   * Fast path: loads a finished index for the current pack. Never embeds anything, so it is safe on
+   * the UI path. Indexing is the worker's job.
+   */
+  suspend fun load(context: Context): Boolean = lock.withLock {
     if (ready) return true
     if (!isDownloaded(context)) return false
     withContext(Dispatchers.IO) {
@@ -116,6 +127,31 @@ object Semantic {
       if (passages.isEmpty()) return@withContext false
       val packStamp = Knowledge.packStamp(context) ?: return@withContext false
       // An index for a different pack, model or dimension is not reused.
+      if (loadIndex(context, packStamp, passages.size)) {
+        ready = true
+        Log.i(TAG, "index loaded: ${entries.size} vectors, ${passages.size} passages")
+        true
+      } else {
+        false
+      }
+    }
+  }
+
+  /** True when the pack and embedder are here but a finished index is not. */
+  fun needsIndex(context: Context): Boolean =
+    !ready && isDownloaded(context) && Knowledge.isInstalled(context)
+
+  /**
+   * Builds the index, or resumes an interrupted one. Called from [SemanticIndexWorker] so a normal
+   * phone session is never blocked, and so progress survives the app being closed.
+   */
+  suspend fun index(context: Context): Boolean = lock.withLock {
+    if (ready) return true
+    withContext(Dispatchers.IO) {
+      if (!isDownloaded(context)) return@withContext false
+      val passages = Knowledge.passages(context)
+      if (passages.isEmpty()) return@withContext false
+      val packStamp = Knowledge.packStamp(context) ?: return@withContext false
       if (loadIndex(context, packStamp, passages.size)) {
         ready = true
         Log.i(TAG, "index loaded: ${entries.size} vectors, ${passages.size} passages")
@@ -136,26 +172,98 @@ object Semantic {
     for ((i, p) in passages.withIndex()) {
       for (piece in split(p.text)) index.add(Entry(i, piece))
     }
-    val all = FloatArray(index.size * size)
-    progress = 0 to index.size
-    Log.i(TAG, "indexing ${index.size} passages with $size dimensions")
+    val total = index.size
+    val keys = LongArray(total) { hashOf(index[it].text) }
+    val all = FloatArray(total * size)
+    val done = BooleanArray(total)
+    // 1. An interrupted run of this exact pack continues where it stopped.
+    val start = loadPartial(context, packStamp, size, total, keys, all)
+    if (start > 0) for (i in 0 until start) done[i] = true
+    // 2. Anything whose text has not changed keeps its vector. Adding a few resources to the pack
+    //    then costs only the new passages instead of another full pass over all of them.
+    else {
+      val old = loadStore(context, size)
+      if (old != null) {
+        val at = HashMap<Long, Int>(old.hashes.size * 2)
+        for (i in old.hashes.indices) at[old.hashes[i]] = i
+        for (i in 0 until total) {
+          val hit = at[keys[i]] ?: continue
+          old.data.copyInto(all, i * size, hit * size, hit * size + size)
+          done[i] = true
+        }
+      }
+    }
+    val known = done.count { it }
+    progress = known to total
+    Log.i(TAG, "indexing $total passages with $size dimensions ($known already known)")
     val started = System.currentTimeMillis()
-    for ((n, e) in index.withIndex()) {
-      val v = embed(DOC_PREFIX + e.text)
+    for (n in start until total) {
+      if (done[n]) continue
+      val v = embed(DOC_PREFIX + index[n].text)
       if (v.size != size) return false
       v.copyInto(all, n * size)
-      progress = (n + 1) to index.size
-      // Kept on disk as it goes: an interrupted build resumes from what is already done.
-      if ((n + 1) % 500 == 0) Log.i(TAG, "indexed ${n + 1}/${index.size}")
+      done[n] = true
+      progress = (n + 1) to total
+      if ((n + 1) % CHECKPOINT == 0) {
+        savePartial(context, packStamp, size, total, n + 1, keys, all)
+        Log.i(TAG, "indexed ${n + 1}/$total")
+      }
     }
     progress = null
     dim = size
     entries = index
     vectors = all
-    saveIndex(context, packStamp, index.size, all)
+    saveIndex(context, packStamp, keys, size, all)
+    partialFile(context).delete()
     ready = true
-    Log.i(TAG, "indexed ${index.size} pieces in ${(System.currentTimeMillis() - started) / 1000.0} s")
+    Log.i(TAG, "indexed $total pieces in ${(System.currentTimeMillis() - started) / 1000.0} s")
     return true
+  }
+
+  /** The finished vectors so far, flushed atomically so a crash never leaves a half-written file. */
+  private fun savePartial(context: Context, packStamp: Long, d: Int, total: Int, done: Int, keys: LongArray, data: FloatArray) {
+    runCatching {
+      val f = partialFile(context)
+      val tmp = File(f.parentFile, f.name + ".tmp")
+      DataOutputStream(BufferedOutputStream(GZIPOutputStream(tmp.outputStream().buffered()))).use { out ->
+        out.writeInt(PARTIAL_MAGIC)
+        out.writeInt(VERSION)
+        out.writeLong(packStamp)
+        out.writeInt(d)
+        out.writeInt(total)
+        out.writeInt(done)
+        for (i in 0 until done) {
+          out.writeLong(keys[i])
+          for (j in 0 until d) out.writeFloat(data[i * d + j])
+        }
+      }
+      if (f.exists()) f.delete()
+      if (!tmp.renameTo(f)) Log.w(TAG, "could not rename the checkpoint")
+    }.onFailure { Log.w(TAG, "could not save the checkpoint", it) }
+  }
+
+  /** How many vectors the checkpoint holds for this pack/model/chunking; 0 when it does not fit. */
+  private fun loadPartial(context: Context, packStamp: Long, d: Int, total: Int, keys: LongArray, into: FloatArray): Int {
+    val f = partialFile(context)
+    if (!f.isFile) return 0
+    return runCatching {
+      DataInputStream(BufferedInputStream(GZIPInputStream(f.inputStream().buffered()))).use { input ->
+        if (input.readInt() != PARTIAL_MAGIC || input.readInt() != VERSION) return 0
+        if (input.readLong() != packStamp) return 0
+        if (input.readInt() != d || input.readInt() != total) return 0
+        val done = input.readInt()
+        if (done <= 0 || done > total) return 0
+        // Read aside and only keep it when every hash matches: a stale checkpoint must not leave
+        // some vectors of an older pack mixed into the new index.
+        val tmp = FloatArray(done * d)
+        for (i in 0 until done) {
+          if (input.readLong() != keys[i]) return 0
+          for (j in 0 until d) tmp[i * d + j] = input.readFloat()
+        }
+        tmp.copyInto(into, 0, 0, done * d)
+        done
+      }
+    }.getOrDefault(0)
   }
 
   /** Splits so nothing is truncated and no piece exceeds [MAX_CHARS]; a short passage stays whole. */
@@ -251,7 +359,7 @@ object Semantic {
 
   // --- index file -------------------------------------------------------------------------------
 
-  private fun saveIndex(context: Context, packStamp: Long, count: Int, data: FloatArray) {
+  private fun saveIndex(context: Context, packStamp: Long, keys: LongArray, d: Int, data: FloatArray) {
     runCatching {
       val f = indexFile(context)
       val tmp = File(f.parentFile, f.name + ".tmp")
@@ -259,9 +367,12 @@ object Semantic {
         out.writeInt(MAGIC)
         out.writeInt(VERSION)
         out.writeLong(packStamp)
-        out.writeInt(dim)
-        out.writeInt(count)
-        for (x in data) out.writeFloat(x)
+        out.writeInt(d)
+        out.writeInt(keys.size)
+        for (i in keys.indices) {
+          out.writeLong(keys[i])
+          for (j in 0 until d) out.writeFloat(data[i * d + j])
+        }
       }
       if (f.exists()) f.delete()
       tmp.renameTo(f)
@@ -285,12 +396,50 @@ object Semantic {
         for ((i, p) in Knowledge.passages(context).withIndex()) for (piece in split(p.text)) rebuilt.add(Entry(i, piece))
         if (rebuilt.size != count) return false
         val data = FloatArray(count * d)
-        for (i in data.indices) data[i] = input.readFloat()
+        for (i in 0 until count) {
+          input.readLong() // the text hash; only the build needs it, to reuse vectors
+          for (j in 0 until d) data[i * d + j] = input.readFloat()
+        }
         dim = d
         entries = rebuilt
         vectors = data
         true
       }
     }.getOrDefault(false)
+  }
+
+  private class Store(val hashes: LongArray, val data: FloatArray)
+
+  /**
+   * The previous index, whatever pack it was built for, as long as the vectors are the same width.
+   * Its hashes let a rebuild keep every passage that did not change.
+   */
+  private fun loadStore(context: Context, d: Int): Store? {
+    val f = indexFile(context)
+    if (!f.isFile) return null
+    return runCatching {
+      DataInputStream(BufferedInputStream(GZIPInputStream(f.inputStream().buffered()))).use { input ->
+        if (input.readInt() != MAGIC || input.readInt() != VERSION) return null
+        input.readLong() // pack stamp: deliberately ignored, the hashes decide what is reused
+        if (input.readInt() != d) return null
+        val count = input.readInt()
+        if (count <= 0 || count > 2_000_000) return null
+        val hashes = LongArray(count)
+        val data = FloatArray(count * d)
+        for (i in 0 until count) {
+          hashes[i] = input.readLong()
+          for (j in 0 until d) data[i * d + j] = input.readFloat()
+        }
+        Store(hashes, data)
+      }
+    }.getOrNull()
+  }
+
+  /** A stable 64-bit fingerprint of a chunk's text; equal text never needs embedding twice. */
+  private fun hashOf(text: String): Long {
+    val d = java.security.MessageDigest.getInstance("SHA-256").digest(text.toByteArray(Charsets.UTF_8))
+    var h = 0L
+    for (i in 0 until 8) h = (h shl 8) or (d[i].toLong() and 0xFF)
+    return h
   }
 }

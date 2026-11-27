@@ -88,7 +88,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       !Semantic.isDownloaded(context) ->
         "Off. Adds ${formatBytes(Semantic.SIZE_BYTES)}: searches your notes by meaning, not just matching words."
       Semantic.isReady -> "On — your study files are searched by meaning."
-      else -> "Downloaded. Tap to build the search index."
+      else -> "Downloaded. Indexing runs in the background; tap to start now."
     }
   }
   val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -234,8 +234,13 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
         ) { pickPack.launch(arrayOf("*/*")) }
       }
       ActionRow(Icons.Rounded.Search, "Semantic study search", semanticNote(), enabled = !chat.busy) {
-        if (Semantic.isDownloaded(context)) chat.buildSemanticIndex()
-        else ModelDownloadWorker.start(context, prefs.wifiOnly, ModelDownloadWorker.MODEL_EMBEDDER)
+        when {
+          Semantic.isReady -> Unit
+          Semantic.isDownloaded(context) -> SemanticIndexWorker.start(context)
+          // The last byte has arrived but the file is still being checked: never restart the job.
+          Semantic.partFile(context).length() == Semantic.SIZE_BYTES -> Unit
+          else -> ModelDownloadWorker.start(context, prefs.wifiOnly, ModelDownloadWorker.MODEL_EMBEDDER)
+        }
       }
       ActionRow(Icons.Rounded.DeleteForever, "Delete all chats", enabled = chat.chats.isNotEmpty() && !chat.busy) { confirmChats = true }
       ActionRow(Icons.Rounded.DeleteForever, "Delete ${prefs.model.label}", "Frees ${formatBytes(prefs.model.SIZE_BYTES)}. Other installed models stay.", enabled = !chat.busy) { confirmModel = true }

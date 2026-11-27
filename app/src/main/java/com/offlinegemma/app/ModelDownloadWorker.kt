@@ -64,6 +64,7 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
 
   override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
     val ctx = applicationContext
+    val asked = inputData.getString(KEY_MODEL) ?: MODEL_GEMMA
     val t = target(ctx)
     if (t.file.length() == t.size) return@withContext Result.success()
 
@@ -102,6 +103,8 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
       return@withContext Result.failure(error(ERR_OTHER, "Could not save the model file."))
     }
     Log.i(TAG, "${t.name} ready: ${t.file.path}")
+    // The embedder is only useful once the pack is indexed; start that in the background now.
+    if (asked == MODEL_EMBEDDER) SemanticIndexWorker.start(ctx)
     Result.success()
   }
 

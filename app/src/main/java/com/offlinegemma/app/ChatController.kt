@@ -98,8 +98,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   private fun warmSemantic() {
     if (!Semantic.isDownloaded(app) || !Knowledge.isInstalled(app)) return
     scope.launch {
-      val ok = runCatching { Semantic.prepare(app) }.getOrDefault(false)
+      val ok = runCatching { Semantic.load(app) }.getOrDefault(false)
       Log.i("ChatController", "semantic index ready=$ok (${Semantic.progress ?: "idle"})")
+      // Missing or stale (a pack was rebuilt): build or resume it in the background, where a swipe
+      // away does not throw the work out and the next launch carries on.
+      if (!ok) SemanticIndexWorker.start(app)
     }
   }
 
