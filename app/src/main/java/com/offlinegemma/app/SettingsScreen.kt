@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -23,7 +22,6 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.MenuBook
@@ -40,7 +38,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -79,9 +76,6 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
   // system file picker (Downloads, Drive, a USB stick) and copied into the app's own folder.
   var importing by remember { mutableStateOf(false) }
   var importNote by remember { mutableStateOf<String?>(null) }
-  var importingModel by remember { mutableStateOf(false) }
-  var modelProgress by remember { mutableStateOf<Pair<Long, Long>?>(null) }
-  var modelError by remember { mutableStateOf<String?>(null) }
   // The embedder downloads and indexes in the background, so the row polls its state.
   var semanticTick by remember { mutableStateOf(0) }
   androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -120,24 +114,6 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
     }
   }
   val chatBytes = remember(chat.chats.size) { app.store.bytesUsed() }
-  val pickModel = androidx.activity.compose.rememberLauncherForActivityResult(
-    androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
-  ) { uri ->
-    if (uri == null) return@rememberLauncherForActivityResult
-    importingModel = true
-    modelError = null
-    modelProgress = 0L to 0L
-    scope.launch {
-      runCatching { ModelImporter.import(context, uri) { c, t -> modelProgress = c to t } }
-        .onSuccess { m ->
-          prefs.model = m
-          chat.loadModel()
-        }
-        .onFailure { modelError = it.message ?: "That file could not be imported." }
-      modelProgress = null
-      importingModel = false
-    }
-  }
   val ram = remember { ModelInfo.totalRamBytes(context) }
 
   Scaffold(
@@ -181,12 +157,6 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       if (ram < ModelInfo.MIN_RAM_BYTES) {
         InfoRow(Icons.Rounded.Speed, "This phone is on the slow side", "${formatBytes(ram)} of memory. Answers come a few words a second, and long chats are summarised sooner.")
       }
-      ActionRow(
-        Icons.Rounded.FolderOpen,
-        "Import a model file",
-        "Already have the model on a USB stick or another phone? Copy it in instead of downloading it again.",
-        enabled = !importingModel && !chat.busy,
-      ) { pickModel.launch(arrayOf("*/*")) }
 
       Section("Answers")
       SwitchRow(Icons.Rounded.Build, "Tools (agent mode)", "Jonaki AI may search the web and test code to give better answers.", prefs.agent) { prefs.agent = it }
@@ -280,35 +250,6 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
     }
   }
 
-  if (importingModel) {
-    AlertDialog(
-      onDismissRequest = {},
-      title = { Text("Importing the model") },
-      text = {
-        Column {
-          val p = modelProgress
-          Text(
-            if (p != null && p.second > 0) "${formatBytes(p.first)} / ${formatBytes(p.second)}"
-            else "Looking for the file…",
-          )
-          Spacer(Modifier.height(12.dp))
-          LinearProgressIndicator(
-            progress = { if (p != null && p.second > 0) p.first.toFloat() / p.second else 0f },
-            modifier = Modifier.fillMaxWidth(),
-          )
-        }
-      },
-      confirmButton = {},
-    )
-  }
-  modelError?.let { msg ->
-    AlertDialog(
-      onDismissRequest = { modelError = null },
-      title = { Text("Could not import") },
-      text = { Text(msg) },
-      confirmButton = { TextButton(onClick = { modelError = null }) { Text("OK") } },
-    )
-  }
   if (confirmChats) {
     AlertDialog(
       onDismissRequest = { confirmChats = false },
