@@ -85,6 +85,8 @@ object Semantic {
 
   @Volatile private var engine: EmbeddingEngine? = null
   private val lock = Mutex()
+  /** Guards opening the embedder, so two chats asking at once cannot load it twice. */
+  private val engineLock = Mutex()
 
   /** Progress of a build, for the UI. Null when nothing is building. */
   @Volatile var progress: Pair<Int, Int>? = null
@@ -319,20 +321,29 @@ object Semantic {
    */
   suspend fun search(context: Context, query: String, limit: Int = LIMIT): List<Hit> = withContext(Dispatchers.IO) {
     if (!ready) return@withContext emptyList()
+    // A finished index is loaded at startup without touching the embedder (~0.5 GB, too much to
+    // hold next to E4B before it is needed). The engine is opened on the first question that
+    // actually needs retrieval and then kept for the session. Without this, a relaunch left
+    // engine == null and every search silently returned nothing.
+    val d = engineLock.withLock { openEngine(context) } ?: return@withContext emptyList()
     val q = embed(QUERY_PREFIX + query.trim()).takeIf { it.isNotEmpty() } ?: return@withContext emptyList()
-    val d = dim
-    if (q.size != d || d == 0) return@withContext emptyList()
+    if (q.size != d) return@withContext emptyList()
     val passages = Knowledge.passages(context)
     val best = HashMap<Int, Float>()
+    var top = -1f
     var i = 0
     while (i + d <= vectors.size) {
       var dot = 0f
       var k = 0
       while (k < d) { dot += q[k] * vectors[i + k]; k++ }
       val e = entries.getOrNull(i / d) ?: break
+      if (dot > top) top = dot
       if (dot >= GATE && dot > (best[e.passage] ?: 0f)) best[e.passage] = dot
       i += d
     }
+    // The best score even when nothing clears the gate: that is the only way to tell a query the
+    // pack does not cover from a gate that is simply too high for the language.
+    Log.i(TAG, "search '${query.take(40)}': top=${"%.3f".format(top)} aboveGate=${best.size} (gate=$GATE)")
     best.entries.sortedByDescending { it.value }.asSequence()
       .mapNotNull { en -> passages.getOrNull(en.key)?.let { Hit(it, en.value) } }
       .take(limit).toList()
