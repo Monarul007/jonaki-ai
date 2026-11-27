@@ -69,6 +69,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -117,7 +120,6 @@ fun HomeScreen(
   LaunchedEffect(Unit) { entered = true }
 
   Box(Modifier.fillMaxSize()) {
-    AuroraBackground()
     Column(
       Modifier.fillMaxSize().verticalScroll(rememberScrollState())
         .padding(start = 24.dp, end = 24.dp, top = 8.dp, bottom = 40.dp),
@@ -130,7 +132,7 @@ fun HomeScreen(
           greeting = greetingFor(now.hour, bengali),
           date = dateLabel(now, bengali),
           subtitle = when {
-            loading -> if (bengali) "জোনাকি এআই জেগে উঠছে…" else "Waking up Jonaki AI…"
+            loading -> ""
             bengali -> "আজ কী বুঝতে চান? নিচে লিখুন, ছবি তুলুন, বা কথা বলুন।"
             else -> "What would you like to understand? Type below, scan a page, or just talk."
           },
@@ -204,7 +206,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun AuroraBackground() {
+fun AuroraBackground() {
   val scheme = MaterialTheme.colorScheme
   val dots = remember {
     val r = Random(7)
@@ -212,22 +214,24 @@ private fun AuroraBackground() {
   }
   Canvas(Modifier.fillMaxSize()) {
     drawRect(Brush.verticalGradient(listOf(scheme.surface, scheme.surfaceContainerLowest)))
-    drawCircle(
-      Brush.radialGradient(
-        listOf(Brand.Violet.copy(alpha = 0.17f), Color.Transparent),
-        center = Offset(size.width * 0.86f, size.height * 0.02f),
-        radius = size.width * 0.92f,
-      ),
-      radius = size.width * 0.92f,
-    )
-    drawCircle(
-      Brush.radialGradient(
-        listOf(Brand.Teal.copy(alpha = 0.09f), Color.Transparent),
-        center = Offset(size.width * 0.02f, size.height * 0.28f),
-        radius = size.width * 0.78f,
-      ),
-      radius = size.width * 0.78f,
-    )
+    // Dithered natively: a Compose radial gradient in 8-bit colour shows its contour lines as a
+    // visible arc. Dithering scatters those steps so the glow fades without an edge.
+    fun glow(cx: Float, cy: Float, radius: Float, color: Color, alpha: Float) {
+      drawIntoCanvas { canvas ->
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+          isDither = true
+          shader = android.graphics.RadialGradient(
+            cx, cy, radius,
+            intArrayOf(color.copy(alpha = alpha).toArgb(), color.copy(alpha = 0f).toArgb()),
+            floatArrayOf(0f, 1f),
+            android.graphics.Shader.TileMode.CLAMP,
+          )
+        }
+        canvas.nativeCanvas.drawCircle(cx, cy, radius, paint)
+      }
+    }
+    glow(size.width * 0.86f, size.height * 0.02f, size.width * 0.92f, Brand.Violet, 0.17f)
+    glow(size.width * 0.02f, size.height * 0.28f, size.width * 0.78f, Brand.Teal, 0.09f)
     dots.forEach { (x, y, rad) ->
       drawCircle(
         scheme.onSurface.copy(alpha = 0.12f),
@@ -249,8 +253,10 @@ private fun Hero(greeting: String, date: String, subtitle: String) {
       )
       Spacer(Modifier.height(10.dp))
       Text(greeting, style = MaterialTheme.typography.displaySmall, color = MaterialTheme.colorScheme.onSurface)
-      Spacer(Modifier.height(8.dp))
-      Text(subtitle, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      if (subtitle.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text(subtitle, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      }
     }
     Spacer(Modifier.width(10.dp))
     BrandMark(82.dp)

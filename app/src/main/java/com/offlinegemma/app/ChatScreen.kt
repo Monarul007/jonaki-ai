@@ -60,6 +60,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -72,6 +73,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -161,6 +163,9 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
     }
   }
   Box(Modifier.fillMaxSize()) {
+  // The aurora lives behind everything, so the top bar can be transparent and the gradient is not
+  // cut off by a hard edge under the header.
+  AuroraBackground()
   ModalNavigationDrawer(
     drawerState = drawer,
     drawerContent = {
@@ -175,25 +180,28 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
     },
   ) {
     Scaffold(
+      containerColor = Color.Transparent,
       topBar = {
-        CenterAlignedTopAppBar(
+        Column {
+        TopAppBar(
           navigationIcon = {
             IconButton(onClick = { scope.launch { drawer.open() } }) { Icon(Icons.Rounded.Menu, "Chats and settings") }
           },
           title = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column {
               Text(
                 if (chat.lines.isEmpty()) "Jonaki AI" else chat.title,
-                maxLines = 1,
+                maxLines = if (chat.lines.isEmpty()) 1 else 2,
                 overflow = TextOverflow.Ellipsis,
-                style = MaterialTheme.typography.titleMedium,
+                style = if (chat.lines.isEmpty()) MaterialTheme.typography.titleLarge
+                else MaterialTheme.typography.titleMedium,
               )
               // Work running in another chat: say where, so the spinner is not mistaken for this chat.
               val elsewhere = chat.busy && !chat.busyHere
-              val sub = (if (elsewhere) "Answering in “${chat.runningTitle}”" else chat.status) ?: when {
+              val sub = if (chat.lines.isEmpty()) "" else (if (elsewhere) "Answering in “${chat.runningTitle}”" else chat.status) ?: when {
                 chat.loadError != null -> "Model failed to load"
-                chat.loading -> "Waking up Jonaki AI…"
-                chat.ready -> "On-device · ${chat.gemma.mode.substringBefore(" +")}"
+                chat.loading -> "Waking up…"
+                // Mode (GPU/CPU) is in Settings; it does not need to repeat on every screen.
                 else -> ""
               }
               if (sub.isNotEmpty()) {
@@ -225,8 +233,9 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
             LanguagePill(bengali = chat.prefs.answerBengali, onChange = { chat.prefs.answerBengali = it })
             IconButton(onClick = { chat.newChat() }) { Icon(Icons.Rounded.Add, "New chat") }
           },
-          colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
+          colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
         )
+        }
       },
       bottomBar = {
         Composer(
@@ -605,30 +614,21 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
 fun LanguagePill(bengali: Boolean, onChange: (Boolean) -> Unit) {
   val scheme = MaterialTheme.colorScheme
   Surface(
+    onClick = { onChange(!bengali) },
     shape = RoundedCornerShape(50),
     color = scheme.surfaceContainerHigh,
-    modifier = Modifier.padding(end = 2.dp).semantics(mergeDescendants = false) {
-      contentDescription = if (bengali) "Answer language: Bengali" else "Answer language: English"
+    contentColor = scheme.primary,
+    modifier = Modifier.padding(end = 4.dp).height(34.dp).semantics {
+      contentDescription = if (bengali) "Answers in Bengali — switch to English"
+      else "Answers in English — switch to Bengali"
     },
   ) {
-    Row(Modifier.padding(3.dp)) {
-      for ((isBn, label) in listOf(false to "EN", true to "বাং")) {
-        val on = bengali == isBn
-        Surface(
-          onClick = { onChange(isBn) },
-          shape = RoundedCornerShape(50),
-          color = if (on) scheme.primary else Color.Transparent,
-          contentColor = if (on) scheme.onPrimary else scheme.onSurfaceVariant,
-          modifier = Modifier.heightIn(min = 36.dp).semantics {
-            contentDescription = if (isBn) "Answer in Bengali" else "Answer in English"
-            selected = on
-          },
-        ) {
-          Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-            Text(label, style = MaterialTheme.typography.labelLarge)
-          }
-        }
-      }
+    Box(Modifier.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
+      Text(
+        if (bengali) "বাং" else "EN",
+        style = MaterialTheme.typography.labelLarge,
+        maxLines = 1,
+      )
     }
   }
 }
