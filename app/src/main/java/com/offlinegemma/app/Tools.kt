@@ -255,14 +255,19 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
     val opening = OPENING_OPTION.find(text) ?: return text
     // Group 2 is the option's text ("অম্বর"); group 1 is only its label letter.
     val first = matchOption(opening.groupValues[2], options) ?: return text
-    // Which option does the rest of the answer argue for? The last option named in a sentence that
-    // says "correct/right/সঠিক/উত্তর", falling back to the most-mentioned option.
     val body = text.substring(opening.range.last + 1)
-    // Only an explicit commitment counts ("'অবনী' সঠিক", "the correct answer is অবনী"). Counting
-    // mentions instead would rewrite the opening of a self-consistent answer just because a quoted
-    // study passage named another option more often — which made the answer contradict itself worse.
-    val claimed = CLAIM.find(body)?.groupValues?.drop(2)?.firstOrNull { it.isNotBlank() }
+    // Which option does the rest of the answer argue for?
+    //
+    // Only a commitment counts, never a bare mention: the model discusses every option, so counting
+    // mentions rewrote a self-consistent answer just because the passage it quoted named another
+    // option more often. Two shapes of commitment are recognised:
+    //   1. an explicit claim — "'অবনী' সঠিক", "the correct answer is অবনী"; this outranks everything.
+    //   2. the answer finally settling on one option — "অতএব ... (ক) অবনী", "So the answer is (ক)";
+    //      this is what a model that reasoned its way to the right option actually writes, and its
+    //      opening label is often the one it first guessed.
+    val claimed = CLAIM.find(body)?.let { m -> m.groupValues.drop(2).firstOrNull { it.isNotBlank() } }
     val argued = claimed?.let { matchOption(it, options) }
+      ?: SETTLED.find(body)?.groupValues?.get(1)?.let { matchOption("($it)", options) }
     if (argued == null || argued == first) return text
     // Replace label AND text: swapping only the word left "(খ) অবনী", which still names the wrong
     // option letter and would be marked wrong by a reader or a scorer.
@@ -291,6 +296,19 @@ $TC_OPEN{"name":"tool_name","arguments":{"arg":"value"}}$TC_CLOSE
       ?: options.firstOrNull { it.second.contains(want) || want.contains(it.second) }
       ?: options.firstOrNull { o -> OPTION_LABEL.find(named)?.groupValues?.get(1) == o.first }
   }
+
+  /**
+   * The answer finally settling on ONE option: "অতএব সঠিক উত্তর (ক) অবনী", "therefore (a)".
+   * Requires both a concluding cue and the option's own label in parentheses, so an option merely
+   * discussed in passing ("'অনিল' শব্দের অর্থ বায়ু") can never be mistaken for the chosen one.
+   * Group 1 is the label, Bengali or Latin. Written on one line: an earlier version split it across
+   * lines and left the indentation in as literal spaces, so "therefore (ক)" with a single space
+   * never matched.
+   */
+  private val SETTLED = Regex(
+    "(?:অতএব|সুতরাং|তাই|অর্থাৎ|পরিশেষে|সিদ্ধান্ত|(?i:therefore|thus|hence))" +
+      "[^\\n।.!]{0,40}?\\(([কখগঘঙচছa-dA-D])\\)",
+  )
 
   private val OPTION = Regex("""\(([কখগঘঙচছa-dA-D])\)\s*([^\n()কখগঘ]+)""")
   private val OPTION_LABEL = Regex("""\(([কখগঘঙচছa-dA-D])\)""")

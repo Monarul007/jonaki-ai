@@ -693,10 +693,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var calcNote = ""
         var choices = false
         var numericQ = false
+        // The sum the planner asked the phone to compute, if any. When this is set the number is
+        // already exact, so a reasoning pass over it would only cost time.
+        var planForCalc: String? = null
         val canSearch = !offline && prefs.webSearch && Tools.online(app)
         val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode) {
           val plan = planAnswer(topic, canSearch)
           choices = plan.choices
+          planForCalc = plan.calc
           // Record the decision itself: it is the step a reader most wants to see ("why did it
           // search that?"). Ordered before the tool calls it caused.
           val decided = buildList {
@@ -746,11 +750,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
           } else ""
         } else ""
-        // Thinking costs a lot of time on a phone (~5 tokens/s), so it is opt-in and only for
+// Thinking costs a lot of time on a phone (~5 tokens/s), so it is opt-in and only for
         // questions with numbers in them, never for voice or a plain chat turn. It is switched on
-        // the message itself (`gemma.send(..., think = …)`), not by rebuilding the conversation,
+        // the message itself (`gemma.send(..., think = ...)`), not by rebuilding the conversation,
         // so the history is not re-read just to reason about one question.
-        var thinkNow = numericQ && prefs.thinking && !voice
+        //
+        // Skipped when the phone has already computed the sum exactly: reasoning over a number it
+        // was handed adds nothing, and on E4B a reasoning pass is 158 s against 45 s for the same
+        // answer. It is kept for word problems, where the model has to build the set-up itself and
+        // that set-up is what a small model gets wrong.
+        var thinkNow = numericQ && prefs.thinking && !voice && planForCalc == null
         // Reasoning streams into the work panel as it is produced, so the user can watch the
         // model think instead of staring at a spinner. Throttled: every piece would redraw the list.
         gemma.onThought = { piece -> if (voice) Unit else update(answerId) { it.copy(thought = gemma.lastThought.toString()) } }
