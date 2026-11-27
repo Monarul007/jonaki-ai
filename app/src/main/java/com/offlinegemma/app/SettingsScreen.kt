@@ -108,6 +108,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
         }.getOrDefault(false)
       }
       if (!ok) Knowledge.file(context).delete()
+      if (ok) Knowledge.markUserPack(context)
       chat.refreshKnowledge()
       importing = false
       importNote = if (ok) "Study files added." else "That file could not be read as a knowledge pack."
@@ -268,6 +269,8 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
         TextButton(onClick = {
           confirmKnowledge = false
           Knowledge.file(context).delete()
+          Knowledge.markRemoved(context)
+          chat.refreshKnowledge()
         }) { Text("Remove") }
       },
       dismissButton = { TextButton(onClick = { confirmKnowledge = false }) { Text("Keep") } },

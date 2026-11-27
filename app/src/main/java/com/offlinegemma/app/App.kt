@@ -4,6 +4,12 @@ import android.app.Application
 
 /** App-wide objects. They outlive screens, so rotation or switching apps never reloads the model. */
 class App : Application() {
+  override fun onCreate() {
+    super.onCreate()
+    // Before anything reads the pack: a first install has no study files until this copies them.
+    Knowledge.installBundled(this)
+  }
+
   val prefs by lazy { Prefs(this) }
   val store by lazy { ChatStore(this) }
   val gemma by lazy { GemmaEngine(this, prefs) }

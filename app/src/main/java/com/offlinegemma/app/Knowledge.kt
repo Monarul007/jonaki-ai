@@ -35,6 +35,59 @@ object Knowledge {
 
   fun file(context: Context) = File(context.filesDir, FILE_NAME)
 
+  /** The pack shipped inside the APK; see [installBundled]. */
+  private const val ASSET_NAME = "knowledge.pack"
+  private const val PREFS = "settings"
+  private const val KEY_HASH = "bundled_pack_hash"
+  private const val KEY_SOURCE = "pack_source"
+
+  /**
+   * Copies the study pack bundled in the APK into the app's storage on first run, and again when a
+   * new build ships a different pack. A pack the user imported, or one they removed, is left alone.
+   * A recopy changes the file's stamp, so the index is rebuilt; content hashes mean only passages
+   * that actually changed are embedded again.
+   */
+  fun installBundled(context: Context) {
+    val sp = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+    val source = sp.getString(KEY_SOURCE, null)
+    if (source == "user" || source == "removed") return
+    val assetHash = runCatching { hashOfAsset(context) }.getOrNull() ?: return
+    if (sp.getString(KEY_HASH, null) == assetHash && file(context).isFile) return
+    runCatching {
+      context.assets.open(ASSET_NAME).use { input ->
+        file(context).outputStream().use { out -> input.copyTo(out) }
+      }
+      sp.edit().putString(KEY_HASH, assetHash).putString(KEY_SOURCE, "bundled").apply()
+      Log.i(TAG, "bundled study pack installed (${file(context).length()} bytes)")
+    }.onFailure {
+      file(context).delete()
+      Log.w(TAG, "could not install the bundled pack", it)
+    }
+  }
+
+  /** A pack the user chose in Settings outranks the bundled one from then on. */
+  fun markUserPack(context: Context) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_SOURCE, "user").apply()
+  }
+
+  /** The user removed the pack: do not bring the bundled one back on the next launch. */
+  fun markRemoved(context: Context) {
+    context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY_SOURCE, "removed").apply()
+  }
+
+  private fun hashOfAsset(context: Context): String {
+    val md = java.security.MessageDigest.getInstance("SHA-256")
+    context.assets.open(ASSET_NAME).use { input ->
+      val buf = ByteArray(1 shl 16)
+      while (true) {
+        val n = input.read(buf)
+        if (n < 0) break
+        md.update(buf, 0, n)
+      }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
+  }
+
   fun isInstalled(context: Context) = file(context).isFile
 
   /** Every passage, for the semantic index. Empty when the pack is not installed. */

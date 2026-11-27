@@ -263,7 +263,7 @@ object Semantic {
     return runCatching {
       DataInputStream(BufferedInputStream(GZIPInputStream(f.inputStream().buffered()))).use { input ->
         if (input.readInt() != PARTIAL_MAGIC || input.readInt() != VERSION) return 0
-        if (input.readLong() != packStamp) return 0
+        input.readLong() // pack stamp: the per-entry hashes below prove the checkpoint is current
         if (input.readInt() != d || input.readInt() != total) return 0
         val done = input.readInt()
         if (done <= 0 || done > total) return 0
