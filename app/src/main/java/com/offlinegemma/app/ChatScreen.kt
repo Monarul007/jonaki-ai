@@ -46,6 +46,7 @@ import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Settings
@@ -238,17 +239,20 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
         }
       },
       bottomBar = {
-        Composer(
-          chat = chat,
-          text = input,
-          onText = { input = it },
-          onSend = { val t = input.trim(); input = ""; chat.sendTyped(t) },
-          onTalk = onTalk,
-          onCamera = { cameraOpen = true },
-          sheetOpen = sheet,
-          onSheet = { sheet = it },
-          focusRequest = focusComposer,
-        )
+        Column {
+          if (chat.lowReadQuality) ReadQualityNote()
+          Composer(
+            chat = chat,
+            text = input,
+            onText = { input = it },
+            onSend = { val t = input.trim(); input = ""; chat.sendTyped(t) },
+            onTalk = onTalk,
+            onCamera = { cameraOpen = true },
+            sheetOpen = sheet,
+            onSheet = { sheet = it },
+            focusRequest = focusComposer,
+          )
+        }
       },
     ) { pad ->
       Box(Modifier.fillMaxSize().padding(pad)) {
@@ -610,6 +614,26 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
  * EN | বাং — which language Gemma answers in. Two halves of one small pill; the chosen half is filled.
  * Lives in the top bar so it is always in reach (switching takes effect from the next message).
  */
+@Composable
+private fun ReadQualityNote() {
+  Surface(
+    color = MaterialTheme.colorScheme.errorContainer,
+    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+  ) {
+    Row(
+      Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Icon(Icons.Rounded.ErrorOutline, null, modifier = Modifier.size(16.dp))
+      Spacer(Modifier.width(8.dp))
+      Text(
+        "This photo was hard to read. If the answer looks wrong, take another in better light.",
+        style = MaterialTheme.typography.bodySmall,
+      )
+    }
+  }
+}
+
 @Composable
 fun LanguagePill(bengali: Boolean, onChange: (Boolean) -> Unit) {
   val scheme = MaterialTheme.colorScheme

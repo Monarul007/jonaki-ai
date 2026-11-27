@@ -63,6 +63,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   var loading by mutableStateOf(false); private set
   /** The user's own study material is installed on this phone. */
   var knowledgeReady by mutableStateOf(false); private set
+
+  /**
+   * The last photo was read poorly (Tesseract's own confidence was low). The answer still comes, but
+   * the screen says so plainly, because a bad scan is the most common reason an answer is wrong.
+   */
+  var lowReadQuality by mutableStateOf(false); private set
   var loadError by mutableStateOf<String?>(null); private set
   var busy by mutableStateOf(false); private set
   /** Short status under the top bar, e.g. "Compacting 6 earlier messages…". */
@@ -580,9 +586,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var ocrText = ""
         if (imageAtts.isNotEmpty()) {
           status = "Reading the text in the picture…"
+          var worst = 100
           ocrText = imageAtts.mapNotNull { a ->
-            Ocr.readText(app, a.ocrPath ?: a.path).takeIf { it.length >= 12 }
+            val text = Ocr.readText(app, a.ocrPath ?: a.path)
+            if (Ocr.lastConfidence >= 0) worst = minOf(worst, Ocr.lastConfidence)
+            text.takeIf { it.length >= 12 }
           }.joinToString("\n\n")
+          lowReadQuality = worst < 55
           status = null
           update(answerId) {
             it.copy(tools = it.tools + if (ocrText.isNotBlank()) {

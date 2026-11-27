@@ -64,6 +64,10 @@ object Ocr {
    */
   @Volatile var overrideText: String? = null
 
+  /** Tesseract's own 0-100 confidence in the last page read; -1 when it did not run. */
+  @Volatile var lastConfidence: Int = -1
+    private set
+
   suspend fun readText(context: Context, path: String): String = lock.withLock {
     overrideText?.let { return@withLock numberLines(it.trim()) }
     withContext(Dispatchers.IO) {
@@ -84,6 +88,9 @@ object Ocr {
         api.clear()
         api.setImage(bitmap)
         val plain = api.utF8Text?.trim().orEmpty()
+        // Read before the Latin pass consumes the iterator; this is the page's own verdict on how
+        // well it could read the print, used to warn instead of answering from a bad scan.
+        lastConfidence = runCatching { api.meanConfidence() }.getOrDefault(-1)
         val text = runCatching { latinFromMlKit(context, api, bitmap) }
           .onFailure { android.util.Log.w("Ocr", "Latin re-read failed", it) }
           .getOrNull()?.takeIf { it.isNotBlank() } ?: plain
