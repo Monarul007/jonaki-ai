@@ -698,6 +698,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         var planForCalc: String? = null
         val canSearch = !offline && prefs.webSearch && Tools.online(app)
         val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode) {
+          if (Rules.skipPlanner(topic, canSearch)) {
+            // The message already settles what the planner would have been asked for, so its
+            // 6.5 s round-trip is skipped. Options are read straight off the message.
+            choices = Tools.optionsOf(topic).size >= 2
+            // With no planner there is no calculator expression, so this is the local hint only.
+            numericQ = Tutor.looksNumeric(topic, null)
+            Log.i("ChatController", "plan skipped (nothing to decide): choices=$choices numeric=$numericQ")
+            ""
+          } else {
           val plan = planAnswer(topic, canSearch)
           choices = plan.choices
           planForCalc = plan.calc
@@ -749,8 +758,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           if (canSearch && plan.query != null && !numericQ) {
             researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
           } else ""
+          }
         } else ""
-// Thinking costs a lot of time on a phone (~5 tokens/s), so it is opt-in and only for
+        // Thinking costs a lot of time on a phone (~5 tokens/s), so it is opt-in and only for
         // questions with numbers in them, never for voice or a plain chat turn. It is switched on
         // the message itself (`gemma.send(..., think = ...)`), not by rebuilding the conversation,
         // so the history is not re-read just to reason about one question.
