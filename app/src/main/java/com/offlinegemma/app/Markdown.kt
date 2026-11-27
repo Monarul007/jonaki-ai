@@ -173,6 +173,13 @@ object Markdown {
     "to" to "→", "rightarrow" to "→", "leftarrow" to "←", "leftrightarrow" to "↔",
     "Rightarrow" to "⇒", "rightleftharpoons" to "⇌", "leftrightarrows" to "⇌",
     "approx" to "≈", "neq" to "≠", "ne" to "≠", "leq" to "≤", "le" to "≤", "geq" to "≥", "ge" to "≥",
+    "equiv" to "≡", "sim" to "∼", "cong" to "≅", "simeq" to "≃",
+    "therefore" to "∴", "because" to "∵", "implies" to "⇒", "iff" to "⇔",
+    "angle" to "∠", "triangle" to "△", "perp" to "⊥", "parallel" to "∥",
+    "notin" to "∉", "subset" to "⊂", "supset" to "⊃", "cup" to "∪", "cap" to "∩",
+    "emptyset" to "∅", "varnothing" to "∅", "uparrow" to "↑", "downarrow" to "↓",
+    "langle" to "⟨", "rangle" to "⟩", "vdots" to "⋮", "ddots" to "⋱", "prime" to "′",
+    "bullet" to "•", "mid" to "|",
     "infty" to "∞", "propto" to "∝", "degree" to "°", "circ" to "°",
     "Delta" to "Δ", "delta" to "δ", "alpha" to "α", "beta" to "β", "gamma" to "γ", "theta" to "θ",
     "lambda" to "λ", "mu" to "μ", "nu" to "ν", "pi" to "π", "rho" to "ρ", "sigma" to "σ", "tau" to "τ",
@@ -188,14 +195,46 @@ object Markdown {
   const val SUP_ON = '\uE006'; const val SUP_OFF = '\uE007'
   const val SUB_ON = '\uE008'; const val SUB_OFF = '\uE009'
 
+  private val TEXT_COMMANDS = Regex(
+    """\\(?:text|textrm|textnormal|mbox|mathrm|mathbf|mathit|mathsf|mathtt|operatorname|ce)(?:bf|it|rm|sf|tt)?""",
+  )
+
+  /**
+   * Keeps what is inside \text{...}, \mathrm{...} and friends, whatever is nested in it, and drops
+   * the command itself. A regex cannot do this: "\text{\frac{1}{2}}" has a brace inside the group,
+   * and the model writes exactly that inside fractions. Left alone, the leftover "\text{" reached
+   * the reader as raw TeX.
+   */
+  private fun unwrapTextCommands(input: String): String {
+    var s = input
+    var guard = 0
+    while (guard++ < 64) {
+      val m = TEXT_COMMANDS.find(s) ?: break
+      val open = m.range.last + 1
+      if (open >= s.length || s[open] != '{') { s = s.removeRange(m.range); continue }
+      var depth = 0
+      var end = -1
+      for (i in open until s.length) {
+        when (s[i]) {
+          '{' -> depth++
+          '}' -> { depth--; if (depth == 0) { end = i; break } }
+        }
+      }
+      // Unbalanced (the model was cut off mid-formula): drop the command, keep the text.
+      if (end < 0) { s = s.removeRange(m.range); continue }
+      s = s.substring(0, m.range.first) + s.substring(open + 1, end) + s.substring(end + 1)
+    }
+    return s
+  }
+
   /** TeX -> readable text with super/subscript markers (same rules as chat.html tex()). */
   fun tex(expr: String): String {
     var s = expr
     // Last-ditch safety: the model sometimes writes the English word instead of the symbol.
     s = Regex("""\barrow\b""", RegexOption.IGNORE_CASE).replace(s, "→")
     s = s.replace("<=>", "⇌")
-    s = s.replace(Regex("""\\(?:text|mathrm|mathbf|mathit|textrm|ce|operatorname)\{([^{}]*)\}"""), "$1")
-    repeat(2) { s = s.replace(Regex("""\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}"""), "($1)÷($2)") }
+    s = unwrapTextCommands(s)
+    repeat(3) { s = s.replace(Regex("""\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}"""), "($1)÷($2)") }
     // A fraction reads as a division, which is "÷" in a textbook, not a slash — a slash turns
     // "২১০০ ÷ ১৪" into a file path and makes a two-part sum look like one number.
     s = s.replace(Regex("""\(([A-Za-z0-9.]+)\)÷\(([A-Za-z0-9.]+)\)"""), "$1 ÷ $2")
@@ -255,6 +294,10 @@ object Markdown {
     // Stray TeX escapes outside $…$ (e.g. "x\_1" or "\max"): same cleanup as inside maths.
     s = s.replace("\\_", "_")
     s = Regex("""\\(max|min|log|ln|sin|cos|tan|exp|lim|gcd|mod|det|arg)\b""").replace(s, "$1")
+    // A whole formula command that escaped its $...$ (the model writes "\text{মোট কাজ}" alone on a
+    // line). Links and code are already stashed, so their text cannot be touched here.
+    s = unwrapTextCommands(s)
+    s = Regex("""\\([A-Za-z]+)""").replace(s) { m -> TEX_SYMBOLS[m.groupValues[1]] ?: m.value }
 
     val sup = SpanStyle(baselineShift = BaselineShift.Superscript, fontSize = 0.72.em)
     val sub = SpanStyle(baselineShift = BaselineShift.Subscript, fontSize = 0.72.em)
