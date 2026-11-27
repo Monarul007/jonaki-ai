@@ -294,7 +294,13 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
 
   companion object {
     private const val TAG = "GemmaEngine"
-    private val SAMPLER = SamplerConfig(topK = 64, topP = 0.95, temperature = 1.0)
+    /**
+     * Sampling for normal answers. temperature 1.0 / topK 64 was too hot for a 4B model writing
+     * Bengali: it slipped whole words and even inverted a negation ("সবুজ অঙ্গসমূহে বাদে সংঘটিত
+     * হয়" — "occurs except in green organs"), and the planner invented "সালোকসংশ্লেষণারক্ষ" for
+     * সালোকসংশ্লেষণ. 0.7 keeps the answer varied but makes it copy words it actually knows.
+     */
+    private val SAMPLER = SamplerConfig(topK = 40, topP = 0.9, temperature = 0.7)
 
     /**
      * Sampling for arithmetic. At temperature 1.0 the model duplicated a digit inside its own working
