@@ -339,11 +339,11 @@ fun WorkPanel(line: ChatLine) {
           if (line.thought.isNotBlank()) {
             // `ok = null` means "still running", so passing it unconditionally left this row
             // spinning forever after the answer had already been served.
-            StepRow(if (line.done) true else null, "Reasoning", line.thought.trim().take(4000), muted) { }
+            StepRow(if (line.done) true else null, "Reasoning", line.thought.trim().take(4000), muted, null) { }
           }
           for (t in line.tools) {
             val link = t.detail.takeIf { t.name == "web_fetch" && it.startsWith("http") }
-            StepRow(if (line.done) (t.ok ?: true) else t.ok, toolLabel(t), t.result.trim(), muted) {
+            StepRow(if (line.done) (t.ok ?: true) else t.ok, toolLabel(t), t.result.trim(), muted, t.ms) {
               if (link != null) runCatching { uri.openUri(link) }
             }
           }
@@ -353,9 +353,9 @@ fun WorkPanel(line: ChatLine) {
   }
 }
 
-/** One step: mark, label, and (when there is one) the detail it produced. */
+/** One step: mark, label with its duration, and (when there is one) the detail it produced. */
 @Composable
-private fun StepRow(ok: Boolean?, label: String, detail: String, muted: androidx.compose.ui.graphics.Color, onTap: () -> Unit) {
+private fun StepRow(ok: Boolean?, label: String, detail: String, muted: androidx.compose.ui.graphics.Color, ms: Long? = null, onTap: () -> Unit) {
   Column(
     Modifier
       .fillMaxWidth()
@@ -367,6 +367,14 @@ private fun StepRow(ok: Boolean?, label: String, detail: String, muted: androidx
       StepMark(ok, muted)
       Spacer(Modifier.width(8.dp))
       Text(label, style = MaterialTheme.typography.labelMedium, color = muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+      // A step that took seconds is usually the one that made the answer feel slow.
+      if (ms != null && ms >= 400) {
+        Text(
+          " · " + fmtStepTime(ms),
+          style = MaterialTheme.typography.labelSmall,
+          color = muted.copy(alpha = 0.6f),
+        )
+      }
     }
     if (detail.isNotBlank()) {
       Text(
@@ -380,6 +388,13 @@ private fun StepRow(ok: Boolean?, label: String, detail: String, muted: androidx
       )
     }
   }
+}
+
+/** "820 ms", "4.2 s", "1 min 12 s" — short enough to sit after a step label. */
+internal fun fmtStepTime(ms: Long): String = when {
+  ms < 1000 -> "$ms ms"
+  ms < 60_000 -> "%.1f s".format(ms / 1000.0)
+  else -> "${ms / 60_000} min ${(ms % 60_000) / 1000} s"
 }
 
 /** ✓ worked, ✕ failed, spinner = still running. Grey, so the answer stays the main thing. */

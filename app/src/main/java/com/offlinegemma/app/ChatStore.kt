@@ -22,8 +22,18 @@ data class Attachment(
   enum class Kind { IMAGE, AUDIO, DOC }
 }
 
-/** One tool the model used. [ok] null = still running. */
-data class ToolUse(val name: String, val detail: String, val ok: Boolean? = null, val result: String = "")
+/**
+ * One tool the model used. [ok] null = still running.
+ * [ms] is how long the step took, so a slow answer can be traced to the step that ate the time
+ * instead of being blamed on "the model" as a whole.
+ */
+data class ToolUse(
+  val name: String,
+  val detail: String,
+  val ok: Boolean? = null,
+  val result: String = "",
+  val ms: Long? = null,
+)
 
 data class Source(val title: String, val url: String)
 

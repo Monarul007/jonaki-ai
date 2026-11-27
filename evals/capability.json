@@ -1,0 +1,41 @@
+{
+  "_note": "Capability probe for the model comparison. Each case has an expected answer written down BEFORE the run, so a lucky guess cannot be mistaken for skill.",
+  "cases": [
+    {
+      "id": "w_workrate",
+      "ask": "If 20 boys can do a work in 30 days, and 20 men can do the same work in 5 days, how long will 4 men and 10 boys take to do the work?",
+      "web": false,
+      "expect": "300/17 = 17.65 days (a boy does 1/600 per day, a man 1/100; 4/100 + 10/600 = 34/600)"
+    },
+    {
+      "id": "w_percent",
+      "ask": "What is 17% of 2350?",
+      "web": false,
+      "expect": "399.5"
+    },
+    {
+      "id": "w_ratio",
+      "ask": "A sum of 9800 is divided among A, B, C and D in the ratio 2:3:4:5. What is the difference between the largest and the smallest share?",
+      "web": false,
+      "expect": "largest 9800*5/14 = 3500, smallest 9800*2/14 = 1400, difference 2100"
+    },
+    {
+      "id": "w_ages",
+      "ask": "A father is 30 years older than his son. In 5 years he will be 4 times as old as his son. How old are they now?",
+      "web": false,
+      "expect": "son 5, father 35 (in 5 years 10 and 40)"
+    },
+    {
+      "id": "w_train",
+      "ask": "A train 240 m long passes a pole in 12 seconds. How long will it take to pass a platform 360 m long?",
+      "web": false,
+      "expect": "30 seconds (speed 20 m/s, distance 600 m)"
+    },
+    {
+      "id": "w_earth",
+      "ask": "ভূপৃষ্ঠের প্রতিশব্দ কোনটি? (ক) অবনী (খ) অম্বর (গ) অনিল (ঘ) অগ্নি",
+      "web": false,
+      "expect": "(ক) অবনী"
+    }
+  ]
+}

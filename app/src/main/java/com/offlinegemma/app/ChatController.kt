@@ -570,6 +570,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   ) {
     running = target
     busy = true
+    // When the user's message arrived, before the queue and the model load: the number a reader
+    // experiences as "how long did that take".
+    val enteredAt = System.currentTimeMillis()
     showProgress(target)
     // What the model should treat as "my question". On a spoken turn the words are in the audio, so
     // the UI placeholder must never be echoed back: the model answered the literal "🎤 Voice
@@ -1136,6 +1139,25 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           break
         }
         val secs = (System.currentTimeMillis() - start) / 1000.0
+        // Where the wall time actually went, in one line. Asking "why was that answer slow?" used to
+        // mean guessing between prefill, the planner, the tools and decode; now every step is named
+        // with its own duration, so the slow one is identifiable instead of being blamed on "the model".
+        run {
+          val finishedAt = System.currentTimeMillis()
+          val prepMs = start - enteredAt
+          val steps = lineOf(answerId)?.tools.orEmpty().mapNotNull { t ->
+            t.ms?.let { "${t.name}=${it}ms" }
+          }
+          val toolMs = lineOf(answerId)?.tools.orEmpty().sumOf { it.ms ?: 0L }
+          val decodeMs = finishedAt - start - toolMs
+          val answerChars = lineOf(answerId)?.text?.length ?: 0
+          Log.i(
+            "ChatController",
+            "turn timing: prep=${prepMs}ms model=${decodeMs}ms tools=${toolMs}ms total=${finishedAt - enteredAt}ms " +
+              "engine=${gemma.model.name} think=$thinkNow rounds=${turn + 1} chars=$answerChars " +
+              "steps=[${steps.joinToString(" ")}]",
+          )
+        }
         // A multiple-choice answer must name ONE option, and the same one throughout. The model
         // opened with "(খ) অম্বর" and then argued for "অবনী" in the body, so the visible first line
         // contradicted the reasoning below it.
@@ -1465,7 +1487,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       append("CHOICES: YES if my message gives answer options to choose from (such as (a)…(d) or (ক)…(ঘ)), else NO.\n")
       append("Example of the format:\nSEARCH: NONE\nCALC: (3.5 * 12) / 4\nCHOICES: NO")
     }
+    val startedAt = System.currentTimeMillis()
     val raw = runCatching { gemma.oneShot(ask, 90) }.getOrDefault("")
+    val tookMs = System.currentTimeMillis() - startedAt
     status = null
     fun field(name: String) = raw.lineSequence().map { it.trim().trim('*', '`', '-').trim() }
       .firstOrNull { it.startsWith("$name:", ignoreCase = true) }
@@ -1479,7 +1503,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // oneShot closed the chat; reopen it without the turn being answered now. Arithmetic gets the
     // tighter sampler here, at the one rebuild this turn already needs, so no extra one is paid.
     gemma.startChat(history(before), numeric = plan.calc != null)
-    Log.i("ChatController", "plan: search='${plan.query}' calc='${plan.calc}' choices=${plan.choices}")
+    Log.i("ChatController", "plan: search='${plan.query}' calc='${plan.calc}' choices=${plan.choices} (${tookMs} ms)")
     return plan
   }
 
@@ -1492,14 +1516,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     for (attempt in 0..1) {
       if (!JsRunner.runnable(expr)) return ""
       status = "Calculating…"
+      val calcStarted = System.currentTimeMillis()
       update(answerId) { it.copy(tools = it.tools + ToolUse("calculate", expr)) }
       val r = runCatching { JsRunner.run(app, "console.log($expr)") }
         .getOrElse { JsRunner.Result(false, "Error: ${it.message}") }
+      val calcMs = System.currentTimeMillis() - calcStarted
       value = r.output.trim()
       ok = r.ok && value.isNotBlank() && !value.startsWith("Error") &&
         value != "undefined" && value != "NaN" && value != "(the code printed nothing)"
       val shown = expr
-      update(answerId) { line -> line.copy(tools = line.tools.dropLast(1) + ToolUse("calculate", shown, ok, value.take(500))) }
+      update(answerId) { line -> line.copy(tools = line.tools.dropLast(1) + ToolUse("calculate", shown, ok, value.take(500), calcMs)) }
       if (ok || attempt == 1) break
       val fixed = runCatching {
         gemma.oneShot(
@@ -1532,10 +1558,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   ): String {
     status = "Searching the web…"
     update(answerId) { it.copy(tools = it.tools + ToolUse("web_search", query)) }
+    val searchStarted = System.currentTimeMillis()
     val search = runCatching { Tutor.webSearch(query) }.getOrNull()
+    val searchMs = System.currentTimeMillis() - searchStarted
     val results = search?.text ?: "Error: the search did not answer"
     update(answerId) { line ->
-      line.copy(tools = line.tools.dropLast(1) + ToolUse("web_search", query, !search?.sources.isNullOrEmpty(), results.take(2000)))
+      line.copy(tools = line.tools.dropLast(1) + ToolUse("web_search", query, !search?.sources.isNullOrEmpty(), results.take(2000), searchMs))
     }
     if (search == null || search.sources.isEmpty()) { status = null; return "" }
     found.addAll(search.sources)
@@ -1547,6 +1575,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val picks = hits.map { it.first }
       .distinctBy { runCatching { java.net.URI(it.url).host }.getOrNull() ?: it.url }.take(MAX_WEB_PAGES)
     status = "Reading ${picks.size} pages…"
+    val pagesStarted = System.currentTimeMillis()
     val pages = kotlinx.coroutines.coroutineScope {
       picks.map { s ->
         async {
@@ -1556,15 +1585,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         }
       }.awaitAll()
     }.toMap()
+    val pagesMs = System.currentTimeMillis() - pagesStarted
     status = null
     val read = pages.filterValues { p -> p != null && Tools.usablePage(p.text) }.mapValues { it.value!!.text }
     update(answerId) { line ->
       line.copy(tools = line.tools + picks.map { s ->
         val p = pages[s.url]
-        ToolUse("web_fetch", s.url, s.url in read, p?.text?.take(2000) ?: "could not open the page")
+        ToolUse("web_fetch", s.url, s.url in read, p?.text?.take(2000) ?: "could not open the page", pagesMs / picks.size.coerceAtLeast(1))
       })
     }
-    Log.i("ChatController", "web research: ${read.size}/${picks.size} pages read for '$query'")
+    Log.i("ChatController", "web research: ${read.size}/${picks.size} pages read for '$query' (search ${searchMs} ms, pages ${pagesMs} ms)")
     // The room left after the short search texts is shared by the pages that could be read.
     val snippetRoom = hits.sumOf { it.second.length + it.first.title.length + 12 }
     val perPage = ((budget - snippetRoom) / read.size.coerceAtLeast(1)).coerceAtLeast(300)
