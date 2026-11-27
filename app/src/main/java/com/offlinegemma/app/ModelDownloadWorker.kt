@@ -103,8 +103,12 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
       return@withContext Result.failure(error(ERR_OTHER, "Could not save the model file."))
     }
     Log.i(TAG, "${t.name} ready: ${t.file.path}")
-    // The embedder is only useful once the pack is indexed; start that in the background now.
-    if (asked == MODEL_EMBEDDER) SemanticIndexWorker.start(ctx)
+    // The embedder is only useful once the pack is indexed, so start that now and independently of
+    // the tap that triggered the download: nobody should have to press the row a second time.
+    if (asked == MODEL_EMBEDDER) {
+      setForeground(foregroundInfo(100, "Preparing study search...", t.name))
+      SemanticIndexWorker.start(ctx)
+    }
     Result.success()
   }
 
@@ -244,7 +248,13 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
     /** The unique-work name a screen watches to show this model's download progress. */
     fun uniqueName(model: String) = workName(model)
 
-    /** Starts (or restarts with new Wi-Fi setting) a download. The partial file is kept. */
+    /**
+     * Starts a download, or resumes a paused one. The partial file is kept either way.
+     *
+     * [ExistingWorkPolicy.KEEP]: if a job for this model is already queued or running, leave it
+     * alone. REPLACE reset a healthy 485 MB download to zero whenever the row was tapped again, and
+     * since the progress bar came from that job it looked like the download had silently restarted.
+     */
     fun start(context: Context, wifiOnly: Boolean, model: String = MODEL_GEMMA) {
       val request = OneTimeWorkRequestBuilder<ModelDownloadWorker>()
         .setConstraints(
@@ -256,7 +266,7 @@ class ModelDownloadWorker(context: Context, params: WorkerParameters) :
         .setInputData(workDataOf(KEY_MODEL to model))
         .build()
       WorkManager.getInstance(context)
-        .enqueueUniqueWork(workName(model), ExistingWorkPolicy.REPLACE, request)
+        .enqueueUniqueWork(workName(model), ExistingWorkPolicy.KEEP, request)
     }
 
     /** Pause: stops the download but keeps the partial file to resume later. */

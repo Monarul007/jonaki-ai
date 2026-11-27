@@ -172,20 +172,34 @@ object Semantic {
         Log.i(TAG, "index loaded: ${entries.size} vectors, ${passages.size} passages")
         return@withContext true
       }
-      buildIndex(context, packStamp, passages)
+      // Split before opening the engine and publish the total straight away. Opening the embedder
+      // takes seconds on its own, and until the first number appears the row looks like nothing
+      // started — which is exactly what a user pressing the button twice reacts to.
+      val index = ArrayList<Entry>(passages.size)
+      for ((i, p) in passages.withIndex()) {
+        for (piece in split(p.text)) index.add(Entry(i, piece))
+      }
+      progress = 0 to index.size
+      try {
+        buildIndex(context, packStamp, passages, index)
+      } finally {
+        // Never leave a stale "Indexing 0 / N" behind when the build did not finish.
+        if (!ready) progress = null
+      }
     }
   }
 
-  private fun buildIndex(context: Context, packStamp: Long, passages: List<Knowledge.Passage>): Boolean {
+  private fun buildIndex(
+    context: Context,
+    packStamp: Long,
+    passages: List<Knowledge.Passage>,
+    index: List<Entry>,
+  ): Boolean {
     val size = try {
       openEngine(context) ?: return false
     } catch (t: Throwable) {
       Log.w(TAG, "embedder did not load", t)
       return false
-    }
-    val index = ArrayList<Entry>(passages.size)
-    for ((i, p) in passages.withIndex()) {
-      for (piece in split(p.text)) index.add(Entry(i, piece))
     }
     val total = index.size
     val keys = LongArray(total) { hashOf(index[it].text) }

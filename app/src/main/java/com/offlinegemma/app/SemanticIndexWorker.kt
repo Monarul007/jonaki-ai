@@ -41,7 +41,9 @@ class SemanticIndexWorker(context: Context, params: WorkerParameters) :
       Log.i(TAG, "nothing to index: embedder or pack missing")
       return@withContext Result.success()
     }
-    if (Semantic.isReady) return@withContext Result.success()
+    // Already loaded by a previous run, or by another path (opening the app loads a finished index).
+    // Leaving this job queued behind that made a completed row keep switching back to "Indexing...".
+    if (Semantic.isReady || Semantic.matchesCurrentPack(ctx)) return@withContext Result.success()
 
     setForeground(foregroundInfo(null))
     val ok = coroutineScope {

@@ -49,10 +49,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -62,6 +65,26 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+
+/** What a tap on "Semantic study search" is allowed to do. Kept pure so it can be unit-tested. */
+enum class SemanticAction {
+  NOTHING, INDEX, DOWNLOAD;
+
+  companion object {
+    /**
+     * A tap must never restart a 485 MB download that is already finished or already running. Both
+     * used to happen: a tap during the download re-queued the job and reset its progress to zero, and
+     * a job that died after the last byte but before the rename left a complete partial file that no
+     * tap could ever use again.
+     */
+    fun forTap(ready: Boolean, running: Boolean, downloaded: Boolean): SemanticAction = when {
+      ready -> NOTHING        // already working
+      running -> NOTHING      // a live job owns the file; starting another would replace it
+      downloaded -> INDEX     // the file is here, only the index is missing
+      else -> DOWNLOAD        // resume from whatever the partial file already holds
+    }
+  }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -81,14 +104,35 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
   androidx.compose.runtime.LaunchedEffect(Unit) {
     while (true) { kotlinx.coroutines.delay(1500); semanticTick++ }
   }
+  val embedderJob by WorkManager.getInstance(context)
+    .getWorkInfosForUniqueWorkFlow(ModelDownloadWorker.uniqueName(ModelDownloadWorker.MODEL_EMBEDDER))
+    .collectAsState(initial = emptyList())
+  val embedder = embedderJob.firstOrNull()
+  val embedderRunning = embedder?.state == WorkInfo.State.RUNNING ||
+    embedder?.state == WorkInfo.State.ENQUEUED || embedder?.state == WorkInfo.State.BLOCKED
+  // Re-read every tick so the row keeps moving while bytes arrive.
+  val partBytes = if (semanticTick >= 0) Semantic.partFile(context).length() else 0L
   fun semanticNote(): String {
     val index = if (semanticTick >= 0) Semantic.progress else null
+    val part = partBytes
     return when {
-      index != null -> "Indexing your study files… ${index.first} / ${index.second}"
-      !Semantic.isDownloaded(context) ->
+      // Indexing is the long, silent part: it has to say how far along it is.
+      index != null -> "Indexing your study files... ${index.first} / ${index.second}"
+      Semantic.isReady -> "On: your study files are searched by meaning."
+      // The 485 MB download must be visible, or the tap looks like it did nothing.
+      embedder?.state == WorkInfo.State.RUNNING -> {
+        val pct = (part * 100 / Semantic.SIZE_BYTES).toInt()
+        "Downloading the search model... $pct% (${formatBytes(part)} of ${formatBytes(Semantic.SIZE_BYTES)})"
+      }
+      embedderRunning -> "Waiting to download the search model..."
+      embedder?.state == WorkInfo.State.FAILED ->
+        embedder?.outputData?.getString(ModelDownloadWorker.KEY_ERROR) ?: "The download failed. Tap to retry."
+      Semantic.isDownloaded(context) -> "Downloaded. Indexing your study files..."
+      // Complete but not yet verified: a tap must retry the check, never start over.
+      part >= Semantic.SIZE_BYTES -> "Downloaded. Finishing the check..."
+      part > 0 -> "Paused at ${formatBytes(part)} of ${formatBytes(Semantic.SIZE_BYTES)}. Tap to resume."
+      else ->
         "Off. Adds ${formatBytes(Semantic.SIZE_BYTES)}: searches your notes by meaning, not just matching words."
-      Semantic.isReady -> "On — your study files are searched by meaning."
-      else -> "Downloaded. Indexing runs in the background; tap to start now."
     }
   }
   val scope = androidx.compose.runtime.rememberCoroutineScope()
@@ -235,12 +279,13 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
         ) { pickPack.launch(arrayOf("*/*")) }
       }
       ActionRow(Icons.Rounded.Search, "Semantic study search", semanticNote(), enabled = !chat.busy) {
-        when {
-          Semantic.isReady -> Unit
-          Semantic.isDownloaded(context) -> SemanticIndexWorker.start(context)
-          // The last byte has arrived but the file is still being checked: never restart the job.
-          Semantic.partFile(context).length() == Semantic.SIZE_BYTES -> Unit
-          else -> ModelDownloadWorker.start(context, prefs.wifiOnly, ModelDownloadWorker.MODEL_EMBEDDER)
+        when (SemanticAction.forTap(Semantic.isReady, embedderRunning, Semantic.isDownloaded(context))) {
+          SemanticAction.NOTHING -> Unit
+          SemanticAction.INDEX -> SemanticIndexWorker.start(context)
+          // Everything else means bytes are still needed (none, some, or all-but-unverified). The job
+          // resumes from the partial file, so this never starts 485 MB over.
+          SemanticAction.DOWNLOAD ->
+            ModelDownloadWorker.start(context, prefs.wifiOnly, ModelDownloadWorker.MODEL_EMBEDDER)
         }
       }
       ActionRow(Icons.Rounded.DeleteForever, "Delete all chats", enabled = chat.chats.isNotEmpty() && !chat.busy) { confirmChats = true }
