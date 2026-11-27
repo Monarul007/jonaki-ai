@@ -73,6 +73,9 @@ class MainActivity : ComponentActivity() {
     // instead of sitting on "Waking up" forever. loadModel() is safe to call repeatedly.
     val app = application as App
     if (ModelInfo.isDownloaded(this, app.prefs.usableModel())) app.chat.loadModel()
+    // A study pack copied to the phone while the app was in the background gets indexed now,
+    // without waiting for a restart. Unchanged packs do nothing.
+    app.chat.refreshKnowledgeIfStale()
   }
 
   /**

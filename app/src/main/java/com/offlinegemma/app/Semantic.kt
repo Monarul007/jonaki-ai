@@ -92,6 +92,9 @@ object Semantic {
 
   @Volatile private var ready = false
 
+  /** The pack stamp the loaded vectors describe, so a pack replaced on disk is noticed. */
+  @Volatile private var loadedStamp = -1L
+
   /** True once vectors for the current pack are loaded and a query can be embedded. */
   val isReady: Boolean get() = ready
 
@@ -99,6 +102,7 @@ object Semantic {
     runCatching { engine?.close() }
     engine = null
     ready = false
+    loadedStamp = -1L
     vectors = FloatArray(0)
     entries = emptyList()
   }
@@ -130,11 +134,19 @@ object Semantic {
       if (loadIndex(context, packStamp, passages.size)) {
         ready = true
         Log.i(TAG, "index loaded: ${entries.size} vectors, ${passages.size} passages")
+        loadedStamp = packStamp
         true
       } else {
         false
       }
     }
+  }
+
+  /** True when the ready index still describes the pack currently on disk. */
+  fun matchesCurrentPack(context: Context): Boolean {
+    if (!ready) return false
+    val stamp = Knowledge.packStamp(context) ?: return false
+    return stamp == loadedStamp
   }
 
   /** True when the pack and embedder are here but a finished index is not. */
@@ -154,6 +166,7 @@ object Semantic {
       val packStamp = Knowledge.packStamp(context) ?: return@withContext false
       if (loadIndex(context, packStamp, passages.size)) {
         ready = true
+        loadedStamp = packStamp
         Log.i(TAG, "index loaded: ${entries.size} vectors, ${passages.size} passages")
         return@withContext true
       }
@@ -216,6 +229,7 @@ object Semantic {
     saveIndex(context, packStamp, keys, size, all)
     partialFile(context).delete()
     ready = true
+    loadedStamp = packStamp
     Log.i(TAG, "indexed $total pieces in ${(System.currentTimeMillis() - started) / 1000.0} s")
     return true
   }

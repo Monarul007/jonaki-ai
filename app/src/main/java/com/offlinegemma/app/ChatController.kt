@@ -116,6 +116,18 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     warmSemantic()
   }
 
+  /**
+   * Called when the app comes back to the front. A pack replaced on disk (copied over USB, restored
+   * from a backup) changes its stamp without going through Settings, so compare and re-index if so.
+   * While a build runs, its own progress is the guard: nothing is queued twice.
+   */
+  fun refreshKnowledgeIfStale() {
+    if (Semantic.matchesCurrentPack(app)) return
+    if (Semantic.progress != null) return
+    if (!Semantic.isDownloaded(app) || !Knowledge.isInstalled(app)) return
+    warmSemantic()
+  }
+
   /** After the user changes the thinking setting, so it applies to the next answer. */
   fun onThinkingChanged() {
     if (!ready || busy) return
