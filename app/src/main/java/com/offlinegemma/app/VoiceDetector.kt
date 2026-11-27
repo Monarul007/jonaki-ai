@@ -7,7 +7,7 @@ import kotlin.math.sqrt
  * "Is someone talking?" — the sound rules of talk mode, kept free of Android so they can be tested.
  * Same numbers as chat.html onTalkAudio / finishUtterance:
  * threshold = max(0.012, room noise x 3); about 0.35 s kept from before speech starts;
- * the clip ends after 2.5 s of quiet or at 30 s; clips with under 0.3 s of voice are ignored.
+ * the clip ends after 2.5 s of quiet or at 30 s; clips with under 0.5 s of voice are ignored.
  * Barge-in detection exists, but talk mode disables it: only a tap on the orb stops a reply.
  */
 class VoiceDetector(
@@ -80,7 +80,7 @@ class VoiceDetector(
         if (now - quietAt > endSilenceMs || now - startAt > 30_000) {
           val chunks = rec.toList()
           rec.clear()
-          if (voicedMs < 300) Event.Discard else Event.Finish(chunks)
+          if (voicedMs < 500) Event.Discard else Event.Finish(chunks)
         } else Event.None
       }
       Mode.SPEAKING, Mode.THINKING -> {

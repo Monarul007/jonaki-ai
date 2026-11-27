@@ -34,6 +34,8 @@ class TalkController(private val context: Context, private val chat: ChatControl
   enum class State { OFF, LISTENING, RECORDING, THINKING, SPEAKING }
 
   var state by mutableStateOf(State.OFF); private set
+  /** True while waiting for the model to wake before the microphone can start. */
+  var waking by mutableStateOf(false); private set
   /** Microphone loudness 0..1, for the animated orb. */
   var level by mutableFloatStateOf(0f); private set
   /** The reply as it streams, for the transcript on screen. */
@@ -47,6 +49,8 @@ class TalkController(private val context: Context, private val chat: ChatControl
   // Sound detection, same numbers as the PC: threshold = max(0.012, noise floor x 3).
   /** How loud our own voice comes back through the microphone while speaking (loudspeaker echo). */
   private var answerId: Long? = null
+  /** Invalidates a pending "wait for the model" retry when Talk is stopped. */
+  private var startToken = 0
   private val vad = VoiceDetector(RATE, PRE_FRAMES)
   /** Headphones on: no loudspeaker echo (the detector's echo learning uses this). */
   private var loudspeakerSafe = false
@@ -107,13 +111,41 @@ class TalkController(private val context: Context, private val chat: ChatControl
     }
   }
 
+  /** True when the reply goes to headphones, where the microphone will not hear it. */
+  val onHeadphones: Boolean get() = headphones()
+
   @SuppressLint("MissingPermission") // the screen asks for the microphone first
   fun start() {
-    if (running) return
-    if (!chat.gemma.canHear) {
-      error = "Talk mode needs Jonaki AI's hearing, which didn't load on this phone."
+    if (running || waking) return
+    if (chat.gemma.canHear) { beginListening(); return }
+    if (chat.loadError != null) {
+      error = "Jonaki AI's model did not load. Open Settings and try again."
       return
     }
+    // The model takes ~30-40 s to wake after a cold start. Tapping Talk in that window used to show
+    // "hearing didn't load", which reads like a permanent fault. Wait for it instead.
+    error = null
+    waking = true
+    val token = ++startToken
+    fun attempt(n: Int) {
+      main.postDelayed({
+        if (token != startToken) return@postDelayed
+        when {
+          chat.gemma.canHear -> { waking = false; beginListening() }
+          n >= 120 -> {
+            waking = false
+            error = "Jonaki AI's hearing did not load on this phone. Talk needs the audio model."
+          }
+          else -> attempt(n + 1)
+        }
+      }, 500)
+    }
+    attempt(0)
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun beginListening() {
+    if (running) return
     error = null
     val rate = RATE
     val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
@@ -177,6 +209,8 @@ class TalkController(private val context: Context, private val chat: ChatControl
 
   fun stop() {
     running = false
+    startToken++
+    waking = false
     thread = null
     speaker.stop()
     answerId = null

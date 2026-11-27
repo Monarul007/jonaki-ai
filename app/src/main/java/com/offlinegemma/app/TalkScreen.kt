@@ -12,13 +12,10 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,20 +27,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Headphones
-import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -51,32 +55,38 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.offlinegemma.app.ui.Brand
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.random.Random
 
-private fun label(s: TalkController.State) = when (s) {
-  TalkController.State.OFF -> ""
-  TalkController.State.LISTENING -> "Listening…"
-  TalkController.State.RECORDING -> "Hearing you…"
-  TalkController.State.THINKING -> "Thinking…"
-  TalkController.State.SPEAKING -> "Speaking…"
+private fun label(s: TalkController.State, waking: Boolean) = when {
+  waking -> "Waking up..."
+  s == TalkController.State.OFF -> "Ready when you are"
+  s == TalkController.State.LISTENING -> "Listening"
+  s == TalkController.State.RECORDING -> "Hearing you"
+  s == TalkController.State.THINKING -> "Thinking"
+  else -> "Speaking"
 }
 
-private fun hint(s: TalkController.State) = when (s) {
-  TalkController.State.LISTENING -> "Just start talking"
-  TalkController.State.RECORDING -> "Speak freely — pause when you're done"
-  TalkController.State.THINKING -> "Jonaki AI is working on a reply · tap the orb to stop"
-  TalkController.State.SPEAKING -> "Tap the orb to interrupt"
-  TalkController.State.OFF -> ""
+private fun hint(s: TalkController.State, waking: Boolean) = when {
+  waking -> "The model is loading — this takes a few seconds."
+  s == TalkController.State.OFF -> "Tap end when you're finished."
+  s == TalkController.State.LISTENING -> "Speak naturally — pause when you're done."
+  s == TalkController.State.RECORDING -> "I'll send it as soon as you pause."
+  s == TalkController.State.THINKING -> "Working on a reply · tap the orb to stop."
+  else -> "Tap the orb to interrupt."
 }
 
-/** Full-screen voice chat: an animated aurora orb, what's happening, and the reply as it's spoken. */
+/** Full-screen voice chat: an aurora orb, a clear status, and the reply as it is spoken. */
 @Composable
 fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
   val view = LocalView.current
@@ -84,78 +94,244 @@ fun TalkScreen(talk: TalkController, onClose: () -> Unit) {
     view.keepScreenOn = true
     onDispose { view.keepScreenOn = false }
   }
-  val bg = Brush.verticalGradient(listOf(Color(0xFF0B0D1A), Color(0xFF141838), Color(0xFF0B2A2C)))
+  val bg = Brush.verticalGradient(
+    listOf(Color(0xFF06081A), Color(0xFF101638), Color(0xFF07292C)),
+  )
   Box(Modifier.fillMaxSize().background(bg).safeDrawingPadding()) {
+    Stars()
+    // Two soft aurora glows, dithered by the Canvas gradient so no contour lines show.
+    Canvas(Modifier.fillMaxSize()) {
+      drawCircle(
+        Brush.radialGradient(
+          listOf(Brand.Violet.copy(alpha = 0.22f), Brand.Violet.copy(alpha = 0f)),
+          center = Offset(size.width * 0.85f, size.height * 0.08f),
+          radius = size.width * 0.9f,
+        ),
+        radius = size.width * 0.9f,
+      )
+      drawCircle(
+        Brush.radialGradient(
+          listOf(Brand.Teal.copy(alpha = 0.14f), Brand.Teal.copy(alpha = 0f)),
+          center = Offset(size.width * 0.1f, size.height * 0.82f),
+          radius = size.width * 0.8f,
+        ),
+        radius = size.width * 0.8f,
+      )
+    }
+
     Column(
-      Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 24.dp),
+      Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 14.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
     ) {
       Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("Talk with Jonaki AI", style = MaterialTheme.typography.titleMedium, color = Color.White.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
-        Icon(Icons.Rounded.Headphones, null, tint = Color.White.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
-        Text(" Best with headphones", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
-      }
-      val scroll = rememberScrollState()
-      LaunchedEffect(talk.transcript) {
-        if (scroll.value >= scroll.maxValue - 32) scroll.scrollTo(scroll.maxValue)
-      }
-      Box(Modifier.weight(1f).fillMaxWidth().padding(top = 20.dp)) {
-        Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
-          talk.error?.let {
-            Text(
-              it,
-              style = MaterialTheme.typography.bodyLarge,
-              color = Color(0xFFFFB4AB),
-              textAlign = TextAlign.Start,
-              modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(12.dp))
-          }
-          Text(
-            talk.transcript,
-            style = MaterialTheme.typography.bodyLarge,
-            color = Color.White.copy(alpha = 0.82f),
-            textAlign = TextAlign.Start,
-            modifier = Modifier.fillMaxWidth(),
-          )
+        RoundButton(onClick = onClose, label = "End voice chat") {
+          Icon(Icons.Rounded.Close, null, tint = Color.White, modifier = Modifier.size(22.dp))
         }
+        Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+          Text(
+            "JONAKI",
+            style = MaterialTheme.typography.labelSmall.copy(letterSpacing = 3.sp),
+            color = Color.White.copy(alpha = 0.5f),
+          )
+          Text("Voice", style = MaterialTheme.typography.titleLarge, color = Color.White)
+        }
+        OnDeviceChip()
       }
-      val canInterrupt = talk.state == TalkController.State.SPEAKING || talk.state == TalkController.State.THINKING
-      Orb(
-        talk.state,
-        talk.level,
-        Modifier.size(240.dp).clip(CircleShape).clickable(
-          enabled = canInterrupt,
-          onClickLabel = "Interrupt Jonaki AI",
-          role = androidx.compose.ui.semantics.Role.Button,
-        ) { talk.interrupt() },
-      )
-      Spacer(Modifier.height(24.dp))
-      AnimatedContent(talk.state, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "label") { s ->
+
+      Spacer(Modifier.height(10.dp))
+
+      Box(Modifier.fillMaxWidth().height(216.dp), contentAlignment = Alignment.Center) {
+        Orb(
+          talk.state,
+          talk.level,
+          Modifier.size(186.dp).clip(CircleShape).clickable(
+            enabled = talk.state == TalkController.State.SPEAKING ||
+              talk.state == TalkController.State.THINKING,
+            onClickLabel = "Interrupt Jonaki AI",
+            role = Role.Button,
+          ) { talk.interrupt() },
+        )
+      }
+
+      val statusKey = if (talk.waking) "WAKING" else talk.state.name
+      AnimatedContent(
+        targetState = statusKey,
+        transitionSpec = { fadeIn(tween(220)) togetherWith fadeOut(tween(160)) },
+        label = "status",
+      ) { key ->
+        val waking = key == "WAKING"
+        val s = if (waking) TalkController.State.OFF else TalkController.State.valueOf(key)
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
           Text(
-            label(s),
-            style = MaterialTheme.typography.headlineMedium,
+            label(s, waking),
+            style = MaterialTheme.typography.headlineSmall,
             color = Color.White,
             modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
           )
-          Text(hint(s), style = MaterialTheme.typography.bodyMedium, color = Color.White.copy(alpha = 0.6f))
+          Text(
+            hint(s, waking),
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color.White.copy(alpha = 0.58f),
+            textAlign = TextAlign.Center,
+          )
         }
       }
-      Spacer(Modifier.height(20.dp))
-      FilledTonalIconButton(
+
+      Spacer(Modifier.height(12.dp))
+
+      if (!talk.onHeadphones) {
+        Row(
+          Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 2.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(
+            Icons.Rounded.Headphones,
+            null,
+            tint = Color.White.copy(alpha = 0.42f),
+            modifier = Modifier.size(14.dp),
+          )
+          Spacer(Modifier.width(6.dp))
+          Text(
+            "Headphones keep the reply out of the microphone.",
+            style = MaterialTheme.typography.labelSmall,
+            color = Color.White.copy(alpha = 0.42f),
+          )
+        }
+      }
+
+      Spacer(Modifier.height(10.dp))
+
+      ReplyCard(talk, Modifier.weight(1f))
+
+      Spacer(Modifier.height(12.dp))
+
+      Surface(
         onClick = onClose,
-        modifier = Modifier.size(72.dp),
-        colors = IconButtonDefaults.filledTonalIconButtonColors(containerColor = Color.White.copy(alpha = 0.14f), contentColor = Color.White),
-      ) { Icon(Icons.Rounded.Close, "End voice chat", Modifier.size(32.dp)) }
-      Text("End", style = MaterialTheme.typography.labelLarge, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.padding(top = 8.dp))
+        shape = RoundedCornerShape(50),
+        color = Color.White.copy(alpha = 0.10f),
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)),
+      ) {
+        Row(
+          Modifier.padding(horizontal = 22.dp, vertical = 14.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Icon(Icons.Rounded.Close, null, modifier = Modifier.size(18.dp))
+          Spacer(Modifier.width(10.dp))
+          Text("End conversation", style = MaterialTheme.typography.titleSmall)
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun ReplyCard(talk: TalkController, modifier: Modifier) {
+  val scroll = rememberScrollState()
+  LaunchedEffect(talk.transcript) {
+    if (scroll.value >= scroll.maxValue - 32) scroll.scrollTo(scroll.maxValue)
+  }
+  Surface(
+    shape = RoundedCornerShape(26.dp),
+    color = Color.White.copy(alpha = 0.06f),
+    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.09f)),
+    modifier = modifier.fillMaxWidth(),
+  ) {
+    Column(Modifier.padding(horizontal = 18.dp, vertical = 16.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+          Modifier.size(7.dp).clip(CircleShape)
+            .background(if (talk.state == TalkController.State.SPEAKING) Brand.Teal else Brand.Violet),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+          "Jonaki",
+          style = MaterialTheme.typography.labelLarge,
+          color = Color.White.copy(alpha = 0.75f),
+          fontWeight = FontWeight.SemiBold,
+        )
+        Spacer(Modifier.weight(1f))
+        if (talk.state == TalkController.State.SPEAKING) {
+          Icon(
+            Icons.Rounded.RecordVoiceOver,
+            null,
+            tint = Brand.Teal,
+            modifier = Modifier.size(16.dp),
+          )
+        }
+      }
+      Spacer(Modifier.height(10.dp))
+      Box(Modifier.weight(1f).fillMaxWidth()) {
+        Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
+          talk.error?.let { message ->
+            Text(
+              message,
+              style = MaterialTheme.typography.bodyMedium,
+              color = Color(0xFFFFB4AB),
+            )
+            Spacer(Modifier.height(10.dp))
+          }
+          Text(
+            talk.transcript.ifBlank {
+              if (talk.waking) "One moment while I wake up." else "Ask me anything — I'm listening."
+            },
+            style = MaterialTheme.typography.bodyLarge,
+            color = Color.White.copy(alpha = if (talk.transcript.isBlank()) 0.45f else 0.86f),
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun RoundButton(onClick: () -> Unit, label: String, content: @Composable () -> Unit) {
+  Surface(
+    onClick = onClick,
+    shape = CircleShape,
+    color = Color.White.copy(alpha = 0.08f),
+    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+    modifier = Modifier.size(44.dp).semantics { contentDescription = label },
+  ) {
+    Box(contentAlignment = Alignment.Center) { content() }
+  }
+}
+
+@Composable
+private fun OnDeviceChip() {
+  Surface(
+    shape = RoundedCornerShape(50),
+    color = Color.White.copy(alpha = 0.07f),
+    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.10f)),
+  ) {
+    Row(
+      Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Box(Modifier.size(6.dp).clip(CircleShape).background(Brand.Teal))
+      Spacer(Modifier.width(6.dp))
+      Text("On-device", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.7f))
+    }
+  }
+}
+
+/** A quiet starfield, so the voice screen belongs to the same night sky as Home. */
+@Composable
+private fun Stars() {
+  val dots = remember {
+    val r = Random(11)
+    List(26) { Triple(r.nextFloat(), r.nextFloat() * 0.62f, 0.8f + r.nextFloat() * 1.6f) }
+  }
+  Canvas(Modifier.fillMaxSize()) {
+    dots.forEach { (x, y, rad) ->
+      drawCircle(Color.White.copy(alpha = 0.18f), radius = rad.dp.toPx(), center = Offset(size.width * x, size.height * y))
     }
   }
 }
 
 /**
- * The talk orb. Breathes while listening, swells with your voice while recording,
- * orbits while thinking, and sends out soft rings while speaking.
+ * The talk orb. Breathes while listening, swells with your voice while recording, orbits while
+ * thinking, and sends out soft rings while speaking.
  */
 @Composable
 private fun Orb(state: TalkController.State, level: Float, modifier: Modifier) {
@@ -172,16 +348,31 @@ private fun Orb(state: TalkController.State, level: Float, modifier: Modifier) {
     TalkController.State.THINKING -> Triple(Color(0xFF3A4BC4), Brand.Indigo, Color(0xFF2A7F9E))
     else -> Triple(Brand.Teal, Color(0xFF3FD3C0), Brand.Indigo)
   }
-  Canvas(modifier.semantics { contentDescription = "Voice activity: ${label(state)}" }) {
-    val r0 = size.minDimension / 2 * 0.62f
+  Canvas(modifier.semantics { contentDescription = "Voice activity: ${label(state, false)}" }) {
+    val r0 = size.minDimension / 2 * 0.60f
     val scale = when (state) {
-      TalkController.State.RECORDING -> 1f + voice * 0.35f
+      TalkController.State.RECORDING -> 1f + voice * 0.30f
       TalkController.State.LISTENING -> breathe
       else -> 1f
     }
     val r = r0 * scale
+
     // Outer glow.
-    drawCircle(Brush.radialGradient(listOf(b.copy(alpha = 0.45f), Color.Transparent), center = center, radius = r * 1.6f), radius = r * 1.6f)
+    drawCircle(
+      Brush.radialGradient(listOf(b.copy(alpha = 0.42f), b.copy(alpha = 0f)), center = center, radius = r * 1.7f),
+      radius = r * 1.7f,
+    )
+    // Microphone level: three soft rings that follow the voice.
+    if (state == TalkController.State.RECORDING) {
+      for (k in 0..2) {
+        val p = (voice * 0.6f + k * 0.18f)
+        drawCircle(
+          c.copy(alpha = (1f - p) * 0.45f),
+          radius = r * (1.02f + p * 0.75f),
+          style = Stroke(width = 2.dp.toPx()),
+        )
+      }
+    }
     // Speaking: rings flowing outward.
     if (state == TalkController.State.SPEAKING) {
       for (k in 0..2) {
@@ -194,14 +385,18 @@ private fun Orb(state: TalkController.State, level: Float, modifier: Modifier) {
       drawCircle(Brush.sweepGradient(listOf(a, b, c, a), center = center), radius = r)
     }
     drawCircle(
-      Brush.radialGradient(listOf(Color.White.copy(alpha = 0.55f), Color.Transparent), center = Offset(center.x - r * 0.3f, center.y - r * 0.35f), radius = r * 0.9f),
+      Brush.radialGradient(
+        listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0f)),
+        center = Offset(center.x - r * 0.3f, center.y - r * 0.35f),
+        radius = r * 0.9f,
+      ),
       radius = r,
     )
     // Thinking: three little moons circling.
     if (state == TalkController.State.THINKING) {
       for (k in 0..2) {
-        val ang = Math.toRadians((orbit + k * 120).toDouble())
-        val p = Offset(center.x + (r * 1.25f) * cos(ang).toFloat(), center.y + (r * 1.25f) * sin(ang).toFloat())
+        val ang = (orbit + k * 120) * 0.017453292f
+        val p = Offset(center.x + (r * 1.25f) * cos(ang), center.y + (r * 1.25f) * sin(ang))
         drawCircle(Color.White.copy(alpha = 0.85f - k * 0.2f), radius = 6.dp.toPx(), center = p)
       }
     }

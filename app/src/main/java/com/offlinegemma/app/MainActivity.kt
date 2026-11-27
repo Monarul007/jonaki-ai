@@ -136,6 +136,21 @@ class MainActivity : ComponentActivity() {
       }
     }
     if (intent.hasExtra("talk")) { if (intent.getStringExtra("talk") == "off") stopTalk() else startTalk() }
+    // Voice from a file instead of the microphone, so talk mode can be exercised without speaking:
+    // `--es voice_clip /sdcard/clip.wav` (16 kHz mono WAV). Goes through the exact voice path.
+    intent.getStringExtra("voice_clip")?.let { src ->
+      lifecycleScope.launch {
+        val dest = java.io.File(filesDir, "voice_test.wav")
+        val ok = runCatching { java.io.File(src).copyTo(dest, overwrite = true) }.isSuccess
+        if (!ok) { android.util.Log.w("Talk", "voice_clip unreadable: $src"); return@launch }
+        android.util.Log.i("Talk", "voice_clip ready: ${dest.length()} bytes")
+        while (!app.chat.canSend()) kotlinx.coroutines.delay(500)
+        app.chat.sendTyped(
+          "", voice = true,
+          extra = listOf(Attachment(Attachment.Kind.AUDIO, "Voice message", dest.path)),
+        )
+      }
+    }
     intent.getStringExtra("open_chat")?.let { idx -> app.chat.chats.getOrNull(idx.toIntOrNull() ?: 0)?.let { app.chat.openChat(it.id) } }
     intent.replaceExtras(Bundle())
   }

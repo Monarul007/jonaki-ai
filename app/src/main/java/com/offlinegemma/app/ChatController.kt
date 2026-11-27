@@ -451,14 +451,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val docs = atts.filter { it.kind == Attachment.Kind.DOC }
       .joinToString("\n\n") { Attachments.docForModel(it.name, docTexts.remove(it.path) ?: "") }
     val ask = text.ifBlank {
-      if (voice) "(I said this out loud. Reply to it directly, briefly, as in a spoken conversation.)" else "(see attachment)"
+      if (voice) "(I said this out loud. Reply to it directly, briefly, as in a spoken conversation. " +
+        "If the clip has no understandable speech — silence, noise, or you cannot tell what was said — " +
+        "reply with exactly: Sorry, I didn't catch that.)" else "(see attachment)"
     }
     val hasImage = atts.any { it.kind == Attachment.Kind.IMAGE }
     val rules = inLanguage(Tutor.wrap(ask, prefs.demos, codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage), voice = voice))
     val withDocs = if (docs.isEmpty()) rules else "$docs\n\n$rules"
     val hasAudio = atts.any { it.kind == Attachment.Kind.AUDIO }
     val modelText = if (hasAudio) "(${GemmaEngine.VOICE_RULE})\n\n$withDocs" else withDocs
-    val display = text.ifBlank { if (voice) "🎤 Voice message" else "" }
+    val display = text.ifBlank { if (voice) "Voice message" else "" }
     val codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage)
     val online = Tools.online(app)
     // A link the user typed, or words about recent events, always goes to the web tools —
@@ -468,7 +470,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // Offer the tools whenever agent mode, web search and internet are all on. The model decides
     // whether to search: a keyword gate here hid the tools from exactly the chemistry/physics
     // questions that need research, so the model could not choose to look anything up.
-    var agent = prefs.agent && prefs.webSearch && !codeProblem && online
+    var agent = prefs.agent && prefs.webSearch && !codeProblem && online && !voice
     val offline = text.isNotBlank() && !online
     if (offline && wantsWeb) {
       notice("📴 You're offline — live information (weather, news, prices) isn't available.")
@@ -569,6 +571,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     running = target
     busy = true
     showProgress(target)
+    // What the model should treat as "my question". On a spoken turn the words are in the audio, so
+    // the UI placeholder must never be echoed back: the model answered the literal "🎤 Voice
+    // message" (and searched the web for the emoji) when it was used as the question.
+    val asked = if (voice) "the spoken message I just sent" else display
     var fixCode: String? = null
     var findFigures: Pair<Long, String>? = null
     job = scope.launch {
@@ -609,19 +615,24 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // trigger is the modality (a page read by OCR), not any word in it; the model writes the query.
         pageFocus = ""
         val research = if (ocrText.isNotBlank() && prefs.webSearch && Tools.online(app)) {
-          researchPage(answerId, ocrText, modelText, topic ?: display, found)
+          researchPage(answerId, ocrText, modelText, topic ?: asked, found)
         } else ""
 
         val skippedAudio = attachments.count { it.kind == Attachment.Kind.AUDIO } - audio.size
+        Log.i(
+          "ChatController",
+          "turn: voice=$voice images=${images.size} audio=${audio.size}/" +
+            "${attachments.count { it.kind == Attachment.Kind.AUDIO }} skipped=$skippedAudio",
+        )
         // The user's own study material (Biddabari/Uttoron/NCTB/BPSC) searched on the phone.
         // Only the best few passages go in, so a 4k-token window still has room to answer.
         // Voice answers stay conversational and skip this.
         var knowledge = ""
         if (!voice) {
-          val q = (topic ?: display).ifBlank { modelText }.take(400)
+          val q = (topic ?: asked).ifBlank { modelText }.take(400)
           // A sum must not be handed chemistry prose: the passage has to carry a number to be
           // relevant to arithmetic at all.
-          val numericHint = Tutor.looksNumeric(topic ?: display)
+          val numericHint = Tutor.looksNumeric(topic ?: asked)
           // Semantic search first: an absolute cosine gate (0.70), so an unrelated page is dropped
           // however good it looked beside the others. BM25 is the fallback when the embedder or its
           // index is not ready, never a second opinion after the gate rejected everything.
@@ -636,7 +647,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // reached a ratio sum. For a numeric question the passage must at least carry a number,
           // and preferably the question's own most specific one (9800, not just any digit).
           fun hasDigit(p: Knowledge.Passage) = p.text.any { c -> c in '0'..'9' || c in '০'..'৯' }
-          val keyNumber = numbersOf(topic ?: display).maxByOrNull { it.length }
+          val keyNumber = numbersOf(topic ?: asked).maxByOrNull { it.length }
           val hits = when {
             !numericHint -> rawHits
             keyNumber != null -> rawHits.filter {
@@ -814,7 +825,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // The agent loop (agent.py agent_chat): answer, or call a tool, read its result, and try again.
         var prompt = if (agent) "(${Tools.PROMPT})\n\n$text" else text
         if (offline) {
-          val live = Tools.wantsWeb(topic ?: display)
+          val live = Tools.wantsWeb(topic ?: asked)
           prompt = "(${if (live) OFFLINE_LIVE_RULE else OFFLINE_RULE})\n\n$prompt"
         }
         // A link in the message is read BEFORE the model answers (agent.py pre-fetch). Small
@@ -824,7 +835,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             "Tool result for web_fetch:\n" +
               runTool(
                 answerId, Tools.Call("web_fetch", mapOf("url" to url, "query" to linkQuery)),
-                topic ?: display, found,
+                topic ?: asked, found,
               ).take(2400)
           }
           prompt = pages.joinToString("\n\n") + "\n\n" + LINK_RULE + "\n\n" + prompt
@@ -873,12 +884,25 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             break
           }
           first = false
+          // A spoken turn is answered once, from the audio. The web/search/rewrite machinery is for
+          // typed questions: on a clip it has no words to search and ended up answering its own
+          // placeholder ("The phrase 'the spoken message I just sent'..."). If the clip was silence
+          // or noise, say so plainly and go back to listening.
+          if (voice) {
+            val spoken = out.trim()
+            if (spoken.isBlank()) {
+              val miss = "Sorry, I didn't catch that."
+              update(answerId) { it.copy(text = miss) }
+              onAnswerText?.invoke(answerId, miss)
+            }
+            break
+          }
           if (agent) {
             val calls = Tools.parseCalls(out)
             if (calls.isNotEmpty() && turn < MAX_TOOL_TURNS) {
               turn++
               val parts = mutableListOf<String>()
-              for (c in calls) parts.add("Tool result for ${c.name}:\n" + runTool(answerId, c, topic ?: display, found).take(2400))
+              for (c in calls) parts.add("Tool result for ${c.name}:\n" + runTool(answerId, c, topic ?: asked, found).take(2400))
               val results = parts.joinToString("\n\n")
               prompt = "$results\n\nNow answer my question using the tool results above."
               update(answerId) { it.copy(text = "") }
@@ -942,8 +966,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               sourceSearchTried = true
               results = runTool(
                 answerId,
-                Tools.Call("web_search", mapOf("query" to (topic ?: display).take(200))),
-                topic ?: display, found,
+                Tools.Call("web_search", mapOf("query" to (topic ?: asked).take(200))),
+                topic ?: asked, found,
               )
             }
             val usable = results.isNotBlank() && !results.startsWith("Error") && !results.startsWith("No results")
@@ -963,7 +987,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             val prev = out.take(2500)
             gemma.startChat(emptyList(), "")
             resetChat = true
-            prompt = "My question:\n${(topic ?: display).take(300)}\n\n" +
+            prompt = "My question:\n${(topic ?: asked).take(300)}\n\n" +
               "Page text:\n${ocrText.take(if (research.isNotBlank()) 1200 else 1500)}\n\n" +
               (if (research.isNotBlank()) "Web results:\n${research.take(1500)}\n\n" else "") +
               "Your previous answer:\n$prev\n\n" + reviewRule(research.isNotBlank())
@@ -985,7 +1009,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             status = "Checking the answer…"
             val answered = runCatching {
               gemma.oneShot(
-                "The user asked:\n${(topic ?: display).take(400)}\n\nThe answer:\n${out.take(800)}\n\n" +
+                "The user asked:\n${(topic ?: asked).take(400)}\n\nThe answer:\n${out.take(800)}\n\n" +
                   "Does this answer answer exactly what was asked? Reply YES or NO.",
                 6,
               ).trim().uppercase().startsWith("Y")
@@ -1010,8 +1034,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
                   sourceSearchTried = true
                   val results = runTool(
                     answerId,
-                    Tools.Call("web_search", mapOf("query" to (topic ?: display).take(200))),
-                    topic ?: display, found,
+                    Tools.Call("web_search", mapOf("query" to (topic ?: asked).take(200))),
+                    topic ?: asked, found,
                   )
                   val usable = results.isNotBlank() && !results.startsWith("Error") && !results.startsWith("No results")
                   prompt = (if (usable) "Tool result for web_search:\n$results\n\n" else "") + REFUSAL_RULE
@@ -1028,8 +1052,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
                   sourceSearchTried = true
                   runTool(
                     answerId,
-                    Tools.Call("web_search", mapOf("query" to (topic ?: display).take(200))),
-                    topic ?: display, found,
+                    Tools.Call("web_search", mapOf("query" to (topic ?: asked).take(200))),
+                    topic ?: asked, found,
                   )
                 } else ""
                 val usable = results.isNotBlank() && !results.startsWith("Error") && !results.startsWith("No results")
@@ -1051,7 +1075,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             val context = buildString {
               // The round starts a fresh conversation: without the question the model only saw its
               // own answer and replied "please provide the question".
-              append("My question:\n${(topic ?: display).take(600)}\n\n")
+              append("My question:\n${(topic ?: asked).take(600)}\n\n")
               if (ocrText.isNotBlank()) append("Page text:\n${ocrText.take(1200)}\n\n")
               append("Your previous answer:\n$prev\n\n")
               if (found.isNotEmpty()) {
@@ -1084,7 +1108,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               val prev = out.take(2500)
               gemma.startChat(emptyList(), "")
               resetChat = true
-              prompt = "My question:\n${(topic ?: display).take(600)}\n\n" +
+              prompt = "My question:\n${(topic ?: asked).take(600)}\n\n" +
                 "Your previous answer:\n$prev\n\n" +
                 "The arithmetic in it is wrong on these lines (computed by the phone):\n$lines\n\n" +
                 "Fix those numbers in the answer. Keep it the SAME length or shorter: do not start " +
@@ -1103,7 +1127,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // contradicted the reasoning below it.
         if (choices && !testCode && !voice) {
           update(answerId) { line ->
-            val fixed = Tools.settleChoice(line.text, topic ?: display)
+            val fixed = Tools.settleChoice(line.text, topic ?: asked)
             if (fixed != line.text) {
               Log.i("ChatController", "choice settled: ${line.text.take(40)} -> ${fixed.take(40)}")
               line.copy(text = fixed)
@@ -1130,7 +1154,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // A review/verifier reset used a compact context; give the chat its full memory back.
         if (resetChat || shown !== target) gemma.startChat(history(lines))
         // Pictures are found after a typed answer, never in voice chat.
-        if (!voice) findFigures = answerId to (topic ?: display)
+        if (!voice) findFigures = answerId to (topic ?: asked)
         if (testCode) fixCode = testAnswer(answerId, codeFixed)
       } catch (t: Throwable) {
         update(answerId) { it.copy(done = true, error = friendlyError(t)) }
