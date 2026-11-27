@@ -1,0 +1,221 @@
+{
+  "_note": "16 paraphrased exam-style cases (NTRCA school level). The wording is rewritten, not copied: the commercial question banks these are drawn from are marked personal-use only, so no verbatim question text belongs in this repository. The actual 17th NTRCA paper (98 questions) is read from the local study corpus at run time by ntrca_paper.py and is never committed.",
+  "cases": [
+    {
+      "id": "ntrca_porashroyi",
+      "ask": "বাংলা বর্ণমালায় পরাশ্রয়ী বর্ণ কয়টি?",
+      "points": [
+        {
+          "point": "3",
+          "any": [
+            "৩",
+            "3",
+            "তিনটি"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_peyara",
+      "ask": "'পেয়ারা' শব্দটি কোন ভাষা থেকে এসেছে?",
+      "points": [
+        {
+          "point": "Portuguese",
+          "any": [
+            "পর্তুগিজ",
+            "পর্তুগীজ",
+            "Portuguese"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_prithibi_synonym",
+      "ask": "'পৃথিবী' শব্দের সমার্থক কোনটি? (ক) অবনী (খ) অম্বর (গ) অনল (ঘ) অর্ণব",
+      "points": [
+        {
+          "point": "অবনী",
+          "any": [
+            "অবনী"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_sindure_megh",
+      "ask": "'সিঁদুরে মেঘ' বাগধারার অর্থ কী?",
+      "points": [
+        {
+          "point": "fear of danger",
+          "any": [
+            "বিপদ",
+            "আশঙ্কা",
+            "ভয়"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_conditional",
+      "ask": "Fill in the blank: If he ___ a human being, he would not have done this. (a) was (b) were (c) had been (d) has been",
+      "points": [
+        {
+          "point": "had been",
+          "any": [
+            "had been"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_benign",
+      "ask": "What is the antonym of 'benign'?",
+      "points": [
+        {
+          "point": "malignant",
+          "any": [
+            "malignant"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_honorary",
+      "ask": "What is the antonym of 'honorary'? (a) salaried (b) voluntary (c) respected (d) official",
+      "points": [
+        {
+          "point": "salaried",
+          "any": [
+            "salaried",
+            "paid"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_abundant_metal",
+      "ask": "প্রকৃতিতে সবচেয়ে বেশি পাওয়া যায় কোন ধাতু?",
+      "points": [
+        {
+          "point": "aluminium",
+          "any": [
+            "অ্যালুমিনিয়াম",
+            "অ্যালুমিনিয়াম",
+            "অ্যালুমিনিয়াম",
+            "Aluminium",
+            "Aluminum"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_imf_hq",
+      "ask": "আইএমএফ-এর সদর দপ্তর কোথায়?",
+      "points": [
+        {
+          "point": "Washington DC",
+          "any": [
+            "ওয়াশিংটন",
+            "ওয়াশিংটন",
+            "Washington"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_flag_designer",
+      "ask": "বাংলাদেশের জাতীয় পতাকার নকশাকার কে?",
+      "points": [
+        {
+          "point": "Kamrul Hasan",
+          "any": [
+            "কামরুল হাসান",
+            "Kamrul Hasan"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_father_son_age",
+      "ask": "পিতা ও পুত্রের বয়সের গড় ৩০ বছর। ৬ বছর পর তাদের বয়সের অনুপাত হবে ৫:১। পুত্রের বর্তমান বয়স কত?",
+      "points": [
+        {
+          "point": "6 years",
+          "any": [
+            "৬ বছর",
+            "6 years",
+            "৬",
+            " 6"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_men_boys_work",
+      "ask": "3 men or 5 boys can finish a job in 20 days. In how many days will 4 men and 10 boys finish it together?",
+      "points": [
+        {
+          "point": "6 days",
+          "any": [
+            "6 days",
+            "six days"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_ratio_share",
+      "ask": "৯৮০০ টাকা ২:৩:৪:৫ অনুপাতে ভাগ করা হলো। সবচেয়ে বড় ও সবচেয়ে ছোট অংশের পার্থক্য কত?",
+      "points": [
+        {
+          "point": "2100 taka",
+          "any": [
+            "২১০০",
+            "2100",
+            "২,১০০",
+            "2,100"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_perfect_square",
+      "ask": "4x² − 20x এর সাথে কত যোগ করলে এটি একটি পূর্ণবর্গ হবে?",
+      "points": [
+        {
+          "point": "25",
+          "any": [
+            "২৫",
+            "25"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_power",
+      "ask": "If 3^m = 81, what is the value of m³?",
+      "points": [
+        {
+          "point": "64",
+          "any": [
+            "64"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ntrca_human_rights_day",
+      "ask": "বিশ্ব মানবাধিকার দিবস কবে?",
+      "points": [
+        {
+          "point": "10 December",
+          "any": [
+            "১০ ডিসেম্বর",
+            "10 December",
+            "December 10"
+          ]
+        }
+      ]
+    }
+  ]
+}

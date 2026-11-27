@@ -168,13 +168,31 @@ class MainActivity : ComponentActivity() {
       // A relative path is inside the app's own files (the runner copies it there with run-as;
       // the app may not read arbitrary files in /sdcard on Android 13+).
       val file = if (src.startsWith("/")) java.io.File(src) else java.io.File(filesDir, src)
-      val case = runCatching { org.json.JSONObject(file.readText()) }
+      val root = runCatching { org.json.JSONObject(file.readText()) }
         .onFailure { android.util.Log.w("Eval", "cannot read $src", it) }.getOrNull() ?: return@launch
-      val id = case.getString("id")
+      // A batch runs every case in ONE process. Restarting the app per case woke the model up
+      // again for each question (~30 s) and threw away the warm conversation, which made a
+      // paper-sized run both slower and unlike real use.
+      val batch = root.optJSONArray("cases")
+      if (batch != null) {
+        val filter = root.optJSONArray("only")
+        val onlySet = if (filter == null) null else (0 until filter.length()).map { filter.getString(it) }.toSet()
+        val outDir = java.io.File(filesDir, "eval").apply { mkdirs() }
+        for (k in 0 until batch.length()) {
+          val c = batch.getJSONObject(k)
+          val id = c.getString("id")
+          if (onlySet != null && id !in onlySet) continue
+          java.io.File(outDir, "$id.json").delete()
+          runOneCase(chat, id, c, outDir)
+        }
+        java.io.File(outDir, "_batch_done.json").writeText("{\"n\":${batch.length()}}")
+        return@launch
+      }
+      val id = root.getString("id")
       while (!chat.canSend()) kotlinx.coroutines.delay(500)
-      app.prefs.webSearch = case.optBoolean("web", true)
+      app.prefs.webSearch = root.optBoolean("web", true)
       chat.newChat()
-      case.optString("image").takeIf { it.isNotBlank() }?.let { uri ->
+      root.optString("image").takeIf { it.isNotBlank() }?.let { uri ->
         chat.addImage(android.net.Uri.parse(uri))
         kotlinx.coroutines.delay(300)
         while (chat.importing) kotlinx.coroutines.delay(200)
@@ -190,7 +208,7 @@ class MainActivity : ComponentActivity() {
         }
       }
       // Earlier turns of the same chat ("before"), so follow-up questions can be tested.
-      case.optJSONArray("before")?.let { turns ->
+      root.optJSONArray("before")?.let { turns ->
         for (k in 0 until turns.length()) {
           chat.sendTyped(turns.getString(k))
           var quiet = 0
@@ -202,7 +220,7 @@ class MainActivity : ComponentActivity() {
       }
       val started = System.currentTimeMillis()
       android.util.Log.i("Eval", "start $id")
-      chat.sendTyped(case.getString("ask"))
+      chat.sendTyped(root.getString("ask"))
       // Finished = free for two checks in a row (the figure search starts right after the answer).
       var idle = 0
       while (idle < 2) {
@@ -210,26 +228,51 @@ class MainActivity : ComponentActivity() {
         idle = if (chat.busy) 0 else idle + 1
       }
       val answer = chat.lines.lastOrNull { it.who == Who.MODEL }
-      val out = org.json.JSONObject().apply {
-        put("id", id)
-        put("text", answer?.text.orEmpty())
-        put("error", answer?.error ?: org.json.JSONObject.NULL)
-        put("answer_secs", answer?.seconds ?: org.json.JSONObject.NULL)
-        put("total_secs", (System.currentTimeMillis() - started) / 1000.0)
-        put("tools", org.json.JSONArray(answer?.tools.orEmpty().map { t ->
-          org.json.JSONObject().put("name", t.name).put("detail", t.detail).put("ok", t.ok ?: org.json.JSONObject.NULL)
-            .put("result", t.result.take(600))
-        }))
-        put("sources", org.json.JSONArray(answer?.sources.orEmpty().map { s ->
-          org.json.JSONObject().put("title", s.title).put("url", s.url)
-        }))
-        put("figures", org.json.JSONArray(chat.figStates.filterKeys { k -> answer != null && k.startsWith("${chat.chatId}|${answer.id}|") }
-          .values.map { f -> (f as? ChatController.FigState.Done)?.figure?.let { "${it.title} | ${it.license}" } ?: f.toString() }))
-      }
-      val dir = java.io.File(filesDir, "eval").apply { mkdirs() }
-      java.io.File(dir, "$id.json").writeText(out.toString(2))
-      android.util.Log.i("Eval", "done $id in ${out.getDouble("total_secs")}s")
+      writeResult(id, answer, started, java.io.File(filesDir, "eval").apply { mkdirs() })
     }
+  }
+
+  /** One question of a batch: fresh chat, ask, wait for idle, write its result file. */
+  private suspend fun runOneCase(chat: ChatController, id: String, c: org.json.JSONObject, outDir: java.io.File) {
+    while (!chat.canSend()) kotlinx.coroutines.delay(500)
+    (application as App).prefs.webSearch = c.optBoolean("web", true)
+    chat.newChat()
+    // The figure search starts right after the answer, so wait for two quiet checks.
+    var idle = 0
+    while (idle < 1) {
+      kotlinx.coroutines.delay(300)
+      idle = if (chat.busy) 0 else idle + 1
+    }
+    val started = System.currentTimeMillis()
+    android.util.Log.i("Eval", "start $id")
+    chat.sendTyped(c.getString("ask"))
+    idle = 0
+    while (idle < 2) {
+      kotlinx.coroutines.delay(1000)
+      idle = if (chat.busy) 0 else idle + 1
+    }
+    val answer = chat.lines.lastOrNull { it.who == Who.MODEL }
+    writeResult(id, answer, started, outDir)
+    android.util.Log.i("Eval", "done $id")
+  }
+
+  private fun writeResult(id: String, answer: ChatLine?, started: Long, dir: java.io.File) {
+    val out = org.json.JSONObject().apply {
+      put("id", id)
+      put("text", answer?.text.orEmpty())
+      put("error", answer?.error ?: org.json.JSONObject.NULL)
+      put("answer_secs", answer?.seconds ?: org.json.JSONObject.NULL)
+      put("total_secs", (System.currentTimeMillis() - started) / 1000.0)
+      put("tools", org.json.JSONArray(answer?.tools.orEmpty().map { t ->
+        org.json.JSONObject().put("name", t.name).put("detail", t.detail).put("ok", t.ok ?: org.json.JSONObject.NULL)
+          .put("result", t.result.take(600))
+      }))
+      put("sources", org.json.JSONArray(answer?.sources.orEmpty().map { s ->
+        org.json.JSONObject().put("title", s.title).put("url", s.url)
+      }))
+      put("figures", org.json.JSONArray(answer?.sources.orEmpty().map { it.title }))
+    }
+    java.io.File(dir, "$id.json").writeText(out.toString(2))
   }
 
   /** A tapped "answer ready" notification opens that chat. */

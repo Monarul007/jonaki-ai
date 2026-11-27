@@ -53,11 +53,33 @@ def run_case(case, timeout=600):
     return None
 
 
+def score(case, text):
+    """Rough automatic check: does every point have one of its alternative words?
+
+    Same rule as run_evals.py, kept here so a device run reports a pass/fail per case. The number is
+    only a screen for a human read: an answer can contain the right token and still be wrong.
+    """
+    if not text:
+        return 0, 0, []
+    low = text.lower()
+    hits, misses = 0, []
+    points = case.get("points") or []
+    for p in points:
+        alts = (p.get("any") or []) + (p.get("all") or [])
+        ok = bool(alts) and any(a.lower() in low for a in alts)
+        if ok:
+            hits += 1
+        else:
+            misses.append(p.get("point", "?"))
+    return hits, len(points), misses
+
+
 def main():
     path = sys.argv[1]
     only = sys.argv[2:] or None
     with open(path, encoding="utf-8") as f:
         cases = json.load(f)["cases"]
+    total_pts = total_hits = 0
     for c in cases:
         if only and c["id"] not in only:
             continue
@@ -67,16 +89,23 @@ def main():
         if not res:
             print("  TIMEOUT")
             continue
-        print(f"  total {res.get('total_secs')}s  answer {res.get('answer_secs')}s")
+        hits, n, misses = score(c, res.get("text") or "")
+        total_pts += n
+        total_hits += hits
+        print(f"  score {hits}/{n}   total {res.get('total_secs')}s  answer {res.get('answer_secs')}s")
         print(f"  steps: " + ", ".join(
             f"{t['name']}({'ok' if t.get('ok') else 'FAIL'}{', ' + str(t['ms']) + 'ms' if t.get('ms') else ''})"
             for t in res.get("tools", [])))
         print("  answer:")
         for line in (res.get("text") or "").splitlines():
             print("    " + line)
+        if misses:
+            print("  MISSED points: " + " | ".join(misses))
         if res.get("error"):
             print("  ERROR: " + str(res["error"]))
         print()
+    if total_pts:
+        print(f"TOTAL {total_hits}/{total_pts} points ({100.0 * total_hits / total_pts:.0f}%)")
 
 
 if __name__ == "__main__":
