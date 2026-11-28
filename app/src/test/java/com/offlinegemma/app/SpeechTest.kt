@@ -40,6 +40,34 @@ class SpeechTest {
     assertTrue(said.contains("কালো রঙে"))
   }
 
+  /**
+   * The forms actually seen on the device. A citation is usually a LIST, and an earlier fix matched
+   * only a single number — so "[1, 2, 4, 5]" went to the engine and was read as "one two four five".
+   */
+  @Test fun citationListsAreNotReadAloud() {
+    for (cite in listOf("[1, 2, 4, 5]", "[1, 2, 5]", "[4]", "[1]", "[10,11]", "[1, 2, 3, 4, 5]")) {
+      val said = speakable("উত্তরটি হলো পাঁচটি $cite।")
+      assertFalse("$cite should be removed", said.contains("["))
+      assertFalse("$cite numbers should be gone", said.contains("4") || said.contains("5") || said.contains("1,"))
+      assertTrue("the answer itself survives", said.contains("পাঁচটি"))
+    }
+  }
+
+  @Test fun bengaliDigitsInACitationAreRemovedToo() {
+    val said = speakable("উত্তর পাঁচটি [১, ২, ৫]।")
+    assertFalse(said.contains("["))
+    assertFalse(said.contains("১"))
+  }
+
+  @Test fun aRangedCitationIsRemoved() {
+    assertFalse(speakable("দেখুন [1-3] এবং [২–৪]।").contains("["))
+  }
+
+  /** A real link must keep working: the text inside a pair of brackets is not a citation. */
+  @Test fun aNoteInBracketsIsNotMistakenForACitation() {
+    assertTrue(speakable("এটি [দ্রষ্টব্য] একটি নোট।").contains("দ্রষ্টব্য"))
+  }
+
   /** A markdown link keeps its text; only the bare numeric citation is dropped. */
   @Test fun aLinkKeepsItsTextButABareCitationGoes() {
     assertEquals("সূত্র দেখুন", speakable("সূত্র [দেখুন](https://example.com)").trim())

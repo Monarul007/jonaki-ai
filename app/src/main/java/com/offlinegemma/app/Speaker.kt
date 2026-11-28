@@ -18,10 +18,13 @@ fun speakable(text: String): String {
   if (fences % 2 == 1) s = s.substring(0, s.lastIndexOf("```")) // unfinished code block: stop there
   s = s.replace(Regex("```[\\s\\S]*?```"), " ")
   // Sources are cited as bare [1], [2], [3] so the reader can match them to the list. Spoken aloud
-  // they become "three" — a web answer came back with a [3] after almost every line, so the audio was
-  // a poem punctuated by the number three. A link [text](url) keeps its text; a bare number is dropped.
+  // they become "one", "three" — a web answer came back with a [3] after almost every line, so the
+  // audio was a poem punctuated by numbers. A link [text](url) keeps its text; a citation is dropped.
   s = s.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
-  s = s.replace(Regex("\\[\\s*\\d{1,3}\\s*\\]"), "")
+  // A citation is often a LIST, not one number: "[1, 2, 4, 5]", "[1, 2, 5]", "[4]". Matching a single
+  // number left those behind and the engine read them out as "one two four five". Bengali digits are
+  // used too, so they are in the class, and a range like [1-3] counts as a citation.
+  s = s.replace(Regex("\\[\\s*[\\d০-৯]+(?:\\s*[,،–—-]\\s*[\\d০-৯]+)*\\s*\\]"), "")
   // Removing a citation leaves its punctuation stranded: "উৎপন্ন করে [1], ।" became "করে , ।",
   // which the engine reads as "comma full stop". Tidy what the removal exposes.
   s = s.replace(Regex("\\s+([,;.!?।])"), "$1")
