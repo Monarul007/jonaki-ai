@@ -38,6 +38,29 @@ Requirements: JDK 17, Android SDK platform 36, build-tools 36.
 Never commit: `local.properties`, `*.jks`, `*.keystore`, `keystore.properties`,
 `signing.properties`, `*.apk`, `*.aab`, `*.litertlm`, build output or the model cache.
 
+## Commit messages: NO agent attribution
+
+**Hard rule. Never add a co-author, "generated with", or any other attribution line to a commit
+message.** The commit is attributed to the person who owns the repo, and to nobody else.
+
+Do not write any of these:
+
+```
+Co-authored-by: <any agent, bot, or tool>
+Generated with <tool>
+<noreply@...>
+```
+
+A commit message is the subject line, a blank line, and the body. Nothing after the body. This applies
+to every commit, amend, rebase, cherry-pick and squash — if a tool inserts attribution automatically,
+remove it before the commit is created. A HUMAN co-author is fine; the ban is on attributing the work
+to an agent.
+
+Enforced: `sh tools/install-hooks.sh` installs `.git/hooks/commit-msg`, which rejects such a message
+(exit 1) before the commit exists. Run it once per clone — `.git/hooks` is not versioned.
+
+The history was rewritten once to remove 46 such lines; do not reintroduce them.
+
 ---
 
 ## Architecture at a glance
