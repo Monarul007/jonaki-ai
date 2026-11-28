@@ -130,6 +130,12 @@ object Tutor {
    * Does this question need arithmetic worked out? True for a sum the model has to set up itself
    * (a word problem), which is exactly where a small model invents plausible numbers: it answered
    * a 2:3:4:5 share question with "1142.86" instead of 1400. [calc] is the planner's expression.
+   *
+   * Deliberately NOT decided by a vocabulary list. Two attempts at one failed the same way: a digit
+   * check missed "পঁয়তাল্লিশ বছর" (the sum written in words), and a list of Bengali number words
+   * missed whatever the next question happened to spell differently. Enumerating the language is a
+   * losing game, and it is the wrong tool — so the model decides instead. See
+   * [ChatController.numericHint], which asks one short question and answers it by meaning.
    */
   fun looksNumeric(question: String, calc: String? = null): Boolean {
     if (!calc.isNullOrBlank()) return true

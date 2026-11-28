@@ -833,12 +833,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             // "ইতিহাস বিষয়ে অভিজ্ঞ ব্যক্তি এক কথায় কী হবে" for a question that should have been
             // searched verbatim, and the pages it fetched had to be discarded.
             //
-            // num_results/options/calc are all decided locally here: no options (checked above), no
-            // digits (checked above, so no calculator), and the query is the message.
+            // Options are decided locally (Rules.messageIsGoodQuery rejects exam questions). Whether
+            // WORKING is needed is a judgement about meaning, not vocabulary — asked of the model,
+            // because both keyword attempts failed on "পঁয়তাল্লিশ বছর". Falls back to the local hint
+            // if the model is unclear, so a failure here never removes the working.
             choices = false
-            numericQ = false
+            numericQ = needsArithmetic(topic) ?: Tutor.looksNumeric(topic, null)
             planQueryUsed = topic
-            Log.i("ChatController", "planner skipped: message is already a query ('${topic.take(60)}')")
+            Log.i("ChatController", "planner skipped: message is already a query ('${topic.take(60)}') numeric=$numericQ")
             AgentTrace.note("PLAN", "skipped: using the message as the query")
             if (canSearch) {
               try {
@@ -852,8 +854,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             // The message already settles what the planner would have been asked for, so its
             // 6.5 s round-trip is skipped. Options are read straight off the message.
             choices = Tools.optionsOf(topic).size >= 2
-            // With no planner there is no calculator expression, so this is the local hint only.
-            numericQ = Tutor.looksNumeric(topic, null)
+            // No calculator expression without the planner, but whether WORKING is needed still has
+            // to be decided — by meaning, not by a word list. See needsArithmetic.
+            numericQ = needsArithmetic(topic) ?: Tutor.looksNumeric(topic, null)
             Log.i("ChatController", "plan skipped (nothing to decide): choices=$choices numeric=$numericQ")
             ""
           } else {
@@ -1722,6 +1725,46 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     }
     figStates[k] = FigState.None("None of the pictures found matched well enough.", retry = true)
     return null
+  }
+
+  /**
+   * Does answering this need arithmetic worked out? Asked of the model, in one short call.
+   *
+   * Both earlier attempts at this were keyword tests, and both failed on the first real question:
+   *
+   *   "পিতা মাতার বয়সের গড় পঁয়তাল্লিশ বছর … পুত্রের বয়স কত"
+   *
+   * has no digit (the figures are spelled out), so a digit check said "not arithmetic" and the answer
+   * came back as a bare "১৮ বছর।". Adding a list of Bengali number words was the same mistake one
+   * level deeper: it enumerates one spelling of the language and misses the next question. Deciding by
+   * vocabulary is not what this is — it is a judgement about meaning, which is what the model is for.
+   *
+   * Returns null when it cannot tell, and the caller falls back to the keyword hint. Cheap enough to
+   * run: a few output tokens, and it only runs when the planner was skipped (the planner already
+   * answers this with its CALC line when it does run).
+   */
+  private suspend fun needsArithmetic(question: String): Boolean? {
+    val ask = buildString {
+      append("Question: ${question.take(400)}\n\n")
+      append("Does answering this question require working out arithmetic — adding, multiplying, ")
+      append("averaging, a ratio, a percentage, an age or a time problem — even if the numbers are ")
+      append("written in words rather than digits?\n")
+      append("Reply with ONE word: YES if working is needed, NO if the answer is a fact, a ")
+      append("definition, a name, or a choice with no calculation.")
+    }
+    val raw = runCatching { gemma.oneShot(ask, 6) }.getOrDefault("").trim()
+    // oneShot closes the conversation; the answer round needs it back.
+    runCatching { gemma.startChat(history(lines)) }
+    val yes = Regex("\\bYES\\b", RegexOption.IGNORE_CASE).containsMatchIn(raw)
+    val no = Regex("\\bNO\\b", RegexOption.IGNORE_CASE).containsMatchIn(raw)
+    val verdict = when {
+      yes && !no -> true
+      no && !yes -> false
+      else -> null
+    }
+    Log.i("ChatController", "arithmetic needed: $verdict ('${raw.take(12)}')")
+    AgentTrace.note("NUMERIC", "${verdict ?: "unclear"} for '${question.take(50)}'")
+    return verdict
   }
 
   /** "🖼️ Find picture" on one figure card. */
