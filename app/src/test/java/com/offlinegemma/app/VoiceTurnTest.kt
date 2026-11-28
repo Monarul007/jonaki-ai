@@ -60,7 +60,24 @@ class VoiceTurnTest {
     assertEquals("What is a cell?", searchWords(topic = null, spoken = "", voice = false, modelText = "What is a cell?"))
     assertEquals("What is a cell?", searchWords(topic = "What is a cell?", spoken = "", voice = true))
   }
+
+  /**
+   * A spoken turn must be planned. It used to be blocked twice over: `!voice`, and `attachments
+   * .isEmpty()` — which no voice turn can satisfy, because it always carries its clip. So a spoken
+   * question about who held an office was never planned, never searched, and was answered from a model
+   * trained before the answer changed.
+   */
+  @Test fun aSpokenTurnIsPlannedLikeATypedOne() {
+    // The real gate: `attachments.any { it.kind != AUDIO }` — only a non-audio attachment blocks it.
+    assertTrue("a voice turn's own clip must not block the planner", planAllowed(listOf("AUDIO")))
+    assertTrue("no attachment at all is allowed", planAllowed(emptyList()))
+    assertFalse("a photo still keeps the planner out", planAllowed(listOf("AUDIO", "IMAGE")))
+    assertFalse("a document still keeps the planner out", planAllowed(listOf("DOC")))
+  }
 }
+
+/** Mirrors the planner gate exactly: a turn is planned unless it carries a non-audio attachment. */
+private fun planAllowed(kinds: List<String>): Boolean = kinds.none { it != "AUDIO" }
 
 /** Mirrors the audio branch of ChatController.history(), so the rule itself is under test. */
 private fun historyText(text: String, isAudio: Boolean, hasOtherAttachment: Boolean = false): String = when {

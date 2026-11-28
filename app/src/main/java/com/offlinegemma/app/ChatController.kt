@@ -449,10 +449,18 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   fun sendTyped(text: String, voice: Boolean = false, extra: List<Attachment> = emptyList()) {
     val atts = draft.toList() + extra
     if ((text.isBlank() && atts.isEmpty()) || !canAsk()) return
+    // A spoken clip is turned into an ordinary text message here, before anything else looks at it.
+    // The words are the message; the recording rides along only so it can be played. This matters
+    // beyond tidiness: the planner is skipped when a turn carries attachments, so while the words
+    // lived in the attachment a spoken question could never reach it — which is how a question about
+    // who holds an office was answered from a frozen model, ungated and without a search.
+    val heard = if (!voice || text.isNotBlank()) "" else transcribeFirst(atts)
+    val said = text.ifBlank { heard }
+    val isVoiceText = voice && said.isNotBlank()
     // Creator/identity facts should never be left to a small model to guess.
-    if (atts.isEmpty() && !busy) {
-      Tutor.identityAnswer(text, prefs.answerBengali || hasBengali(text))?.let { reply ->
-        answerIdentity(text, reply, voice)
+    if (atts.none { it.kind != Attachment.Kind.AUDIO } && !busy) {
+      Tutor.identityAnswer(said, prefs.answerBengali || hasBengali(said))?.let { reply ->
+        answerIdentity(said, reply, isVoiceText)
         return
       }
     }
@@ -460,8 +468,8 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     draft.clear()
     val docs = atts.filter { it.kind == Attachment.Kind.DOC }
       .joinToString("\n\n") { Attachments.docForModel(it.name, docTexts.remove(it.path) ?: "") }
-    val ask = text.ifBlank {
-      if (voice) "(I said this out loud. Reply to it directly, briefly, as in a spoken conversation. " +
+    val ask = said.ifBlank {
+      if (isVoiceText) "(I said this out loud. Reply to it directly, briefly, as in a spoken conversation. " +
         "If the clip has no understandable speech — silence, noise, or you cannot tell what was said — " +
         "reply with exactly: Sorry, I didn't catch that.)" else "(see attachment)"
     }
@@ -470,25 +478,49 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     val withDocs = if (docs.isEmpty()) rules else "$docs\n\n$rules"
     val hasAudio = atts.any { it.kind == Attachment.Kind.AUDIO }
     val modelText = if (hasAudio) "(${GemmaEngine.VOICE_RULE})\n\n$withDocs" else withDocs
-    val display = text.ifBlank { if (voice) "Voice message" else "" }
+    val display = said.ifBlank { if (isVoiceText) "Voice message" else "" }
     val codeProblem = Tutor.looksLikeCodeProblem(ask, hasImage)
     val online = Tools.online(app)
     // A link the user typed, or words about recent events, always goes to the web tools —
     // even when agent mode is off (agent.py find_links / ROUTES "web").
-    val links = if (text.isNotBlank() && prefs.webSearch) Tools.findLinks(text) else emptyList()
-    val wantsWeb = text.isNotBlank() && (links.isNotEmpty() || Tools.wantsWeb(text))
+    val links = if (said.isNotBlank() && prefs.webSearch) Tools.findLinks(said) else emptyList()
+    val wantsWeb = said.isNotBlank() && (links.isNotEmpty() || Tools.wantsWeb(said))
     // Offer the tools whenever agent mode, web search and internet are all on. The model decides
     // whether to search: a keyword gate here hid the tools from exactly the chemistry/physics
     // questions that need research, so the model could not choose to look anything up.
-    var agent = prefs.agent && prefs.webSearch && !codeProblem && online && !voice
-    val offline = text.isNotBlank() && !online
+    var agent = prefs.agent && prefs.webSearch && !codeProblem && online
+    val offline = said.isNotBlank() && !online
     if (offline && wantsWeb) {
       notice("📴 You're offline — live information (weather, news, prices) isn't available.")
     }
     sendToModel(
-      display, modelText, topic = text.ifBlank { null }, attachments = atts, voice = voice,
-      testCode = codeProblem, agent = agent, links = links, linkQuery = Tools.linkQuery(text), offline = offline,
+      display, modelText, topic = said.ifBlank { null }, attachments = atts, voice = isVoiceText,
+      testCode = codeProblem, agent = agent, links = links, linkQuery = Tools.linkQuery(said), offline = offline,
     )
+  }
+
+  /**
+   * What a voice clip said, written down, before anything else processes the turn.
+   *
+   * Runs in a throwaway conversation, so the chat it interrupted is reopened afterwards. Empty when
+   * the clip had no clear speech, which leaves the turn as a plain voice message.
+   */
+  private fun transcribeFirst(atts: List<Attachment>): String {
+    // A supplied transcript, so a spoken turn can be compared with the same question typed.
+    forcedSpeech?.let { return it }
+    val clip = atts.firstOrNull { it.kind == Attachment.Kind.AUDIO } ?: return ""
+    val bytes = readBytes(clip) ?: return ""
+    val said = runCatching {
+      kotlinx.coroutines.runBlocking {
+        gemma.oneShot(TRANSCRIBE_PROMPT, maxOutput = 80, audio = bytes)
+      }
+    }.getOrDefault("").trim()
+    // oneShot closed the open conversation; rebuild it without this still-unanswered turn.
+    kotlinx.coroutines.runBlocking {
+      gemma.startChat(history(shown.lines.dropLast(0)).dropLast(0))
+    }
+    Log.i("ChatController", "voice clip says: '${said.take(120)}'")
+    return said.takeIf { it.length in 2..200 && !it.equals("nothing", ignoreCase = true) } ?: ""
   }
 
   /** A fixed, accurate answer to "who are you / who made you". */
@@ -584,10 +616,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // experiences as "how long did that take".
     val enteredAt = System.currentTimeMillis()
     showProgress(target)
-    // What the model should treat as "my question". On a spoken turn the words are in the audio, so
-    // the UI placeholder must never be echoed back: the model answered the literal "🎤 Voice
-    // message" (and searched the web for the emoji) when it was used as the question.
-    val asked = if (voice) "the spoken message I just sent" else display
+    // What the model should treat as "my question". A spoken turn now carries its words as the
+    // message, so they are used directly; the old placeholder ("the spoken message I just sent") is
+    // only right when nothing could be heard from the clip at all.
+    val asked = if (voice) display.ifBlank { "the spoken message I just sent" } else display
     var fixCode: String? = null
     var findFigures: Pair<Long, String>? = null
     job = scope.launch {
@@ -639,43 +671,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         )
         // The user's own study material (Biddabari/Uttoron/NCTB/BPSC) searched on the phone.
         // Only the best few passages go in, so a 4k-token window still has room to answer.
-        // A spoken turn counts too: asking "explain photosynthesis" out loud was answered from the
-        // model's own memory while the identical typed question cited the study files, which reads as
-        // the app ignoring what you fed it.
+        // A spoken turn is searched the same way as a typed one: its transcript is now the message
+        // (see transcribeFirst), so `topic` carries the words and nothing special is needed here.
+        // Asking the same thing out loud used to skip the study files entirely, which read as the app
+        // ignoring what you had fed it.
         var knowledge = ""
-        // A voice clip has no words to search with, so the model is the only thing that knows what was
-        // said. Ask it to write the clip down first; that phrasing is what the search uses.
-        val spoken = if (!voice || audio.isEmpty()) "" else {
-          // A known transcript instead of the model's guess, so a spoken turn can be compared with the
-          // same question typed. Without it, a wrong answer cannot be blamed on the right suspect.
-          forcedSpeech?.let { return@let it } ?: run {
-          status = "Listening…"
-          val said = runCatching {
-            gemma.oneShot(TRANSCRIBE_PROMPT, maxOutput = 80, audio = audio.first())
-          }.getOrDefault("").trim()
-          // oneShot runs in a throwaway conversation and closes it, so the real answer below would
-          // otherwise fail with "Model not loaded yet". Reopen the chat without this unanswered turn.
-          gemma.startChat(history(target.lines.dropLast(2)))
-          status = null
-          Log.i("ChatController", "voice clip says: '${said.take(120)}'")
-          said.takeIf { it.length in 2..200 && !it.equals("nothing", ignoreCase = true) } ?: ""
-          }
-        }
         val searchFor = when {
           topic != null -> topic
-          spoken.isNotBlank() -> spoken
           !voice -> modelText      // typed with no words of its own (attachment only), as before
           else -> ""
-        }
-        // What the user *said* is the message. A chat bubble reading "Voice message" tells them
-        // nothing, and the transcript is already the thing the answer is built from, so it is shown
-        // as an ordinary message instead of a clip. Only when nothing could be heard does the clip
-        // stay as the message.
-        if (spoken.isNotBlank()) {
-          // The user's line is the one allocated just before the answer's.
-          update(answerId - 1) { it.copy(display = spoken, topic = it.topic ?: spoken) }
-          save(target)   // or a reopen shows the clip again while the answer cites the transcript
-          Log.i("ChatController", "shown as a message: '${spoken.take(80)}'")
         }
         if (searchFor.isNotBlank()) {
           val q = searchFor.take(400)
@@ -753,7 +757,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // already exact, so a reasoning pass over it would only cost time.
         var planForCalc: String? = null
         val canSearch = !offline && prefs.webSearch && Tools.online(app)
-        val webBlock = if (topic != null && attachments.isEmpty() && links.isEmpty() && !voice && !testCode) {
+        // A spoken turn's words are now the message itself, so it is planned exactly like a typed
+        // one. The gate used to be `attachments.isEmpty()`, which no voice turn could ever satisfy
+        // (it always carries its clip), so a spoken question was never planned, never searched, and
+        // was answered from a model trained before the answer changed.
+        val blocksPlan = attachments.any { it.kind != Attachment.Kind.AUDIO }
+        val webBlock = if (topic != null && !blocksPlan && links.isEmpty() && !testCode) {
           if (Rules.skipPlanner(topic, canSearch)) {
             // The message already settles what the planner would have been asked for, so its
             // 6.5 s round-trip is skipped. Options are read straight off the message.
@@ -832,14 +841,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // With sources already in hand, the tool-calling instructions only cost room and time.
         val agent = agentAllowed && webBlock.isBlank()
         val text = buildString {
+          // A spoken turn's words are already the message text (see transcribeFirst), so there is
+          // nothing to re-state here.
           append(modelText)
-          // The clip itself is what the model hears, but its words are what the study files are
-          // searched with, so both go in: the recording, and the written form of it.
-          if (spoken.isNotBlank()) {
-            append("\n\n[I said this out loud. What I said, written down: \"")
-            append(spoken.trim())
-            append("\"]")
-          }
           // Verified numbers come first: a note placed after a page of study material was ignored.
           if (calcNote.isNotBlank()) append("\n\n").append(calcNote)
           if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
@@ -989,11 +993,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             break
           }
           first = false
-          // A spoken turn is answered once, from the audio. The web/search/rewrite machinery is for
-          // typed questions: on a clip it has no words to search and ended up answering its own
-          // placeholder ("The phrase 'the spoken message I just sent'..."). If the clip was silence
-          // or noise, say so plainly and go back to listening.
-          if (voice) {
+          // A silent or noisy clip gets one plain answer and nothing else: there are no words to
+          // search or rewrite. A clip whose words *were* understood is an ordinary question now, so
+          // it goes through the same sources/rewrite path as a typed one.
+          if (voice && asked == "the spoken message I just sent") {
             val spoken = out.trim()
             if (spoken.isBlank()) {
               val miss = "Sorry, I didn't catch that."
