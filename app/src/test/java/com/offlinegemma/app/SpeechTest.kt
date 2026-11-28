@@ -63,6 +63,29 @@ class SpeechTest {
     assertFalse(speakable("দেখুন [1-3] এবং [২–৪]।").contains("["))
   }
 
+  /**
+   * Measured: the ratio answer "১৫ : ২১ : ৯১" was spoken as "dupur 3te beje 21 minute 19" — the engine
+   * reads spaced digits around a colon as a CLOCK TIME. Correct answer, unintelligible.
+   */
+  @Test fun aRatioIsNotReadAsAClockTime() {
+    val said = speakable("অনুপাত হলো ১৫ : ২১ : ৯১।")
+    assertFalse("a colon must not survive as a colon", said.contains(":"))
+    assertTrue("the numbers stay", said.contains("১৫") && said.contains("৯১"))
+    assertTrue("spoken as a ratio", said.contains("অনুপাত হলো ১৫ অনুপাত ২১ অনুপাত ৯১"))
+  }
+
+  /** A real clock time (no spaces) must be left alone — corrupting it would be worse than the bug. */
+  @Test fun aClockTimeIsNotCalledARatio() {
+    val said = speakable("সকাল ৯:৩০ এ শুরু হবে।")
+    assertTrue("times keep their colon", said.contains("৯:৩০"))
+  }
+
+  @Test fun anEnglishRatioIsSpokenAsTo() {
+    val said = speakable("The ratio is 15 : 21 : 91.")
+    assertFalse(said.contains(":"))
+    assertTrue(said.contains("15 to 21 to 91"))
+  }
+
   /** A real link must keep working: the text inside a pair of brackets is not a citation. */
   @Test fun aNoteInBracketsIsNotMistakenForACitation() {
     assertTrue(speakable("এটি [দ্রষ্টব্য] একটি নোট।").contains("দ্রষ্টব্য"))
@@ -80,7 +103,11 @@ class SpeechTest {
     val said = speakable(answer)
     assertFalse("the URL must go", said.contains("http"))
     assertFalse("the encoded mush must go", said.contains("%E0"))
-    assertTrue("the answer survives", said.contains("১৫ : ২১ : ৯১"))
+    // The answer's numbers survive; the colons between them do not, because a spaced colon is spoken
+    // as a ratio. A colon elsewhere ("পারেন:") is prose and correctly left alone — asserting "no colon
+    // at all" was too broad and only failed on punctuation that should stay.
+    assertTrue("the answer survives", said.contains("১৫") && said.contains("২১") && said.contains("৯১"))
+    assertFalse("no digit-colon-digit reaches the engine", Regex("[\\d০-৯]\\s*:\\s*[\\d০-৯]").containsMatchIn(said))
   }
 
   @Test fun aSentenceThatNamesItsSourceIsNotReadOut() {

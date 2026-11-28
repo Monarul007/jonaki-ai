@@ -11,12 +11,43 @@ import androidx.compose.runtime.setValue
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * Make a numeric expression readable aloud before TTS sees it.
+ *
+ * Measured: "১৫ : ২১ : ৯১" — the answer to a ratio question — was spoken as "dupur 3te beje 21
+ * minute 19", because a Bengali TTS engine reads `digit : digit` as a CLOCK TIME. The answer was
+ * correct and completely unintelligible.
+ *
+ * A spaced colon between numbers is a ratio, never a time (times are written ৩:২১ without spaces), so
+ * those colons are spoken as "অনুপাত". A decimal point is read as "দশমিক". Both languages are handled
+ * because the answer language decides the voice.
+ */
+fun speakableNumbers(s: String): String {
+  val bengali = s.any { it in '\u0980'..'\u09FF' }
+  val ratioWord = if (bengali) " অনুপাত " else " to "
+  var out = s
+  // A colon that follows a digit and is followed by optional space + digit is a ratio separator.
+  // Only "১৫ : ২১" (spaced) counts; "৯:৩০" is a clock time and keeps its colon.
+  //
+  // The space is consumed from the LEFT side only, so "১৫ : ২১ : ৯১" converts in repeated passes — a
+  // single pass turned the first pair and then failed on the second, because the text became
+  // "১৫ অনুপাত ২১ : ৯১" where the colon no longer has a space before it.
+  val pair = Regex("([\\d০-৯]+)\\s+:\\s*(?=[\\d০-৯])")
+  while (true) {
+    val next = pair.replace(out) { m -> m.groupValues[1] + ratioWord }
+    if (next == out) break
+    out = next
+  }
+  return out
+}
+
 /** Markdown -> words worth saying: no code, no URLs, no symbols, no NEXT: line (same as chat.html speakable). */
 fun speakable(text: String): String {
   var s = text
   val fences = Regex("```").findAll(s).count()
   if (fences % 2 == 1) s = s.substring(0, s.lastIndexOf("```")) // unfinished code block: stop there
   s = s.replace(Regex("```[\\s\\S]*?```"), " ")
+  s = speakableNumbers(s)
   s = stripCitations(s)
   // Removing a citation leaves its punctuation stranded: "উৎপন্ন করে [1], ।" became "করে , ।",
   // which the engine reads as "comma full stop". Tidy what the removal exposes.

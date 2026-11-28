@@ -1336,7 +1336,19 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             webSearchOn = prefs.webSearch && !sourceSearchTried,
           )
           // A meta-answer ("please specify…") must not become the final answer.
-          if (check.problem == AnswerProblem.OK && out.length < 120) {
+          //
+          // The check runs only when there is a reason to doubt the answer. It used to run for EVERY
+          // answer under 120 characters, which is exactly what a good short answer looks like: the
+          // ratio question's correct "…হলো ১৫ : ২১ : ৯১।" is 81 chars, so each turn paid a second
+          // model call — and the trace showed ROUND 2 producing a 498-char version with a URL that
+          // then replaced the good answer and was spoken a second time.
+          //
+          // A study answer key that binds settles the question, and a refusal already has its own
+          // path above; neither needs a model asked to second-guess it.
+          val settled = bindingKey != null
+          if (!settled && check.problem == AnswerProblem.OK && out.length < 120 &&
+            Tools.isUnsure(out)
+          ) {
             resetChat = true
             status = "Checking the answer…"
             val answered = runCatching {
@@ -1347,6 +1359,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               ).trim().uppercase().startsWith("Y")
             }.getOrDefault(true)
             if (!answered) check = AnswerCheck(AnswerProblem.UNSURE)
+          }
+          // Once a binding study key has been stated, the answer is final: do not rewrite it.
+          if (settled && check.problem != AnswerProblem.OK) {
+            Log.i("ChatController", "rewrite skipped: study key '${bindingKey?.answer}' settles it")
+            check = AnswerCheck(AnswerProblem.OK)
           }
           if (check.problem != AnswerProblem.OK && researchRounds < MAX_RESEARCH_ROUNDS) {
             researchRounds++
