@@ -22,6 +22,11 @@ fun speakable(text: String): String {
   // a poem punctuated by the number three. A link [text](url) keeps its text; a bare number is dropped.
   s = s.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
   s = s.replace(Regex("\\[\\s*\\d{1,3}\\s*\\]"), "")
+  // Removing a citation leaves its punctuation stranded: "উৎপন্ন করে [1], ।" became "করে , ।",
+  // which the engine reads as "comma full stop". Tidy what the removal exposes.
+  s = s.replace(Regex("\\s+([,;.!?।])"), "$1")
+  s = s.replace(Regex("([,;])\\s*([.!?।])"), "$2")
+  s = s.replace(Regex("\\s{2,}"), " ")
   s = s.replace(Regex("https?://\\S+"), "")
   s = s.replace(Regex("""(?im)^\s*[*_]*\s*NEXT\s*[*_]*\s*:.*$"""), "")
   s = s.replace(Tutor.FIG_INLINE, " ")

@@ -33,9 +33,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.RecordVoiceOver
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -51,6 +53,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalView
@@ -271,17 +274,110 @@ private fun ReplyCard(talk: TalkController, modifier: Modifier) {
             )
             Spacer(Modifier.height(10.dp))
           }
-          Text(
-            talk.transcript.ifBlank {
-              if (talk.waking) "One moment while I wake up." else "Ask me anything — I'm listening."
-            },
-            style = MaterialTheme.typography.bodyLarge,
-            color = Color.White.copy(alpha = if (talk.transcript.isBlank()) 0.45f else 0.86f),
-          )
+          val working = talk.state == TalkController.State.THINKING && talk.transcript.isBlank()
+          if (working) {
+            // Nothing to read yet, so show the work instead of a dead placeholder. This is the same
+            // list the chat screen puts behind "Worked through it", but voice has no panel to open:
+            // the card is the only place a waiting reader can look.
+            WorkSteps(talk.steps, talk.doing)
+          } else {
+            Text(
+              talk.transcript.ifBlank {
+                if (talk.waking) "One moment while I wake up." else "Ask me anything — I'm listening."
+              },
+              style = MaterialTheme.typography.bodyLarge,
+              color = Color.White.copy(alpha = if (talk.transcript.isBlank()) 0.45f else 0.86f),
+            )
+          }
         }
       }
     }
   }
+}
+
+/**
+ * The steps behind a spoken answer, worded the way the work actually happens:
+ *
+ *   ✓ Checked your study files · 2 passages
+ *   ✓ Decided: search for "…"
+ *   ✓ Searched: …
+ *   ● Reading quora.com…              (still running)
+ *
+ * Grey and small, so the answer still owns the card once it starts. Ticks turn to a spinner while
+ * something is happening and a cross if it failed — the same marks the chat panel uses.
+ */
+@Composable
+private fun WorkSteps(steps: List<ToolUse>, doing: String?) {
+  val faint = Color.White.copy(alpha = 0.62f)
+  Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    if (steps.isEmpty() && doing == null) {
+      Text(
+        "Thinking it through…",
+        style = MaterialTheme.typography.bodyLarge,
+        color = Color.White.copy(alpha = 0.45f),
+      )
+      return@Column
+    }
+    // Oldest first, but only the last few: this is orientation, not a log.
+    for (t in steps.takeLast(6)) {
+      Row(verticalAlignment = Alignment.Top) {
+        StepGlyph(t.ok, faint)
+        Spacer(Modifier.width(8.dp))
+        Column {
+          Text(spokenStepLabel(t), style = MaterialTheme.typography.labelMedium, color = faint)
+          val detail = stepDetail(t)
+          if (detail.isNotBlank()) {
+            Text(
+              detail,
+              style = MaterialTheme.typography.labelSmall,
+              color = faint.copy(alpha = 0.6f),
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        }
+      }
+    }
+    // The live activity, when there is one: the step list only shows what has already finished.
+    doing?.let {
+      Row(verticalAlignment = Alignment.Top) {
+        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = Brand.Teal)
+        Spacer(Modifier.width(8.dp))
+        Text(it, style = MaterialTheme.typography.labelMedium, color = Brand.Teal.copy(alpha = 0.9f))
+      }
+    }
+  }
+}
+
+@Composable
+private fun StepGlyph(ok: Boolean?, color: Color) {
+  when (ok) {
+    null -> CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp, color = color)
+    true -> Icon(Icons.Rounded.Check, null, Modifier.size(14.dp), tint = Brand.Teal)
+    false -> Icon(Icons.Rounded.Close, null, Modifier.size(14.dp), tint = Color(0xFFFFB4AB))
+  }
+}
+
+/** A step in words a person would use, not the tool's internal name. */
+private fun spokenStepLabel(t: ToolUse): String = when (t.name) {
+  "knowledge" -> "Checked your study files"
+  "plan" -> "Decided: ${t.detail}"
+  "ocr" -> if (t.ok == false) "Couldn't read the picture" else "Read the picture"
+  "web_search" -> "Searched the web"
+  "web_fetch" -> "Read a page"
+  "calculate" -> if (t.ok == true) "Calculated it" else "Working out the numbers"
+  "run_js" -> if (t.ok == false) "Code test failed" else "Ran the code"
+  else -> t.name.replace('_', ' ')
+}
+
+/** The short proof under a step: what was searched, which page, how many passages. */
+private fun stepDetail(t: ToolUse): String = when (t.name) {
+  "knowledge" -> t.detail
+  "web_search" -> t.detail
+  "web_fetch" -> t.detail.removePrefix("https://").removePrefix("www.")
+  "calculate" -> if (t.ok == true) "${t.detail} = ${t.result.take(40)}" else t.detail
+  "ocr" -> ""
+  else -> ""
 }
 
 @Composable

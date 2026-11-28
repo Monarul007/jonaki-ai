@@ -41,6 +41,17 @@ class TalkController(private val context: Context, private val chat: ChatControl
   /** The reply as it streams, for the transcript on screen. */
   var transcript by mutableStateOf(""); private set
   var error by mutableStateOf<String?>(null); private set
+  /**
+   * What the turn is doing right now, in the order it happened, for the voice screen.
+   *
+   * The chat screen shows this behind a collapsed "Worked through it" panel, which is right when the
+   * answer sits beside it. Voice has no such panel: the reply card is empty until words appear, so a
+   * long turn is a blank box. These are the same [ToolUse] steps the chat panel reads, plus the live
+   * [ChatController.status] line, so voice shows the work as it happens instead of "…".
+   */
+  var steps by mutableStateOf<List<ToolUse>>(emptyList()); private set
+  /** The current one-line activity ("Searching the web…"), for the same card. */
+  var doing by mutableStateOf<String?>(null); private set
 
   private val main = Handler(Looper.getMainLooper())
   @Volatile private var running = false
@@ -66,6 +77,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
         answerId = id
         transcript = ""
         spokeAnswer = false
+        steps = emptyList()
         speaker.start(id)
       }
     }
@@ -76,6 +88,20 @@ class TalkController(private val context: Context, private val chat: ChatControl
         transcript = speakable(text).trim()
       }
     }
+    // Mirror the work as it happens, so the voice card is never a blank box while the turn is being
+    // prepared. Polled rather than pushed: the steps live on the answer line and are replaced wholesale
+    // as each one starts and finishes, and the screen only needs them a few times a second.
+    main.post(object : Runnable {
+      override fun run() {
+        if (running) {
+          val id = answerId
+          val line = id?.let { chat.lines.lastOrNull { l -> l.id == it } }
+          steps = line?.tools.orEmpty()
+          doing = if (line?.done == false) chat.status else null
+        }
+        main.postDelayed(this, 400)
+      }
+    })
     // Preparation (transcribe -> plan -> search -> first token) takes seconds before any answer text
     // exists, and talk mode was silent for all of it. Acknowledge it here, but not with a spoken
     // phrase — that played a canned sentence on every single turn, and "Let me check that" claims
