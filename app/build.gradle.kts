@@ -21,8 +21,8 @@ android {
         minSdk = 31
         targetSdk = 36
         manifestPlaceholders["appLabel"] = "Jonaki AI"
-        versionCode = 21
-        versionName = "1.0.19"
+        versionCode = 22
+        versionName = "1.0.20"
     }
 
     signingConfigs {

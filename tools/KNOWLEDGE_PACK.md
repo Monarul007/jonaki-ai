@@ -51,3 +51,51 @@ which is why this works inside the phone's 4k/8k token window.
 
 **Settings → Storage → Study files → Remove.** Deleting the app also removes it unless
 "Keep app data" is ticked on uninstall.
+
+---
+
+# Exam pack (exam mode)
+
+The knowledge pack is prose; exam mode needs structure. A second pack carries the same questions
+as exam papers — four options, the key, the subject, and the paper's own explanation where it
+exists.
+
+```bash
+python tools/build_exam_pack.py            # -> app/src/main/assets/exam.pack
+python tools/build_exam_pack.py --stats    # list every paper
+```
+
+Sources: the same `personal-study/biddabari` (NTRCA) and `personal-study/uttoron` (BCS) folders.
+
+Current output: **81 papers · 9,030 questions · 5,027 with an explanation (56%) · 1.30 MB gzipped**.
+
+Format (`version 1`):
+
+```json
+{"version":1,"personalUseOnly":true,
+ "exams":[{"id","title","titleBn","category","group","year",
+           "durationMinutes","negative","count","subjects":[{"name","count"}]}],
+ "questions":{"<examId>":[{"n","subject","text","options":[4],"answer":idx,"explain":str|null}]}}
+```
+
+Field notes:
+
+- Only items with exactly four non-blank options and a `correctIndex` in 0..3 are kept — the same
+  rule the knowledge pack uses, so a section instruction never becomes a question.
+- `durationMinutes` comes from the paper when it records one, else the conventional time for the
+  examination (NTRCA 60, BCS 120). Those two are the real durations; the rest are a minute per
+  question.
+- `negative` is the paper's own `negativeMarking` when present (BCS 0.5, others 0).
+- `explain` is the source's own explanation with scraped page furniture cut off. 46 of them
+  carried the coaching site's promo block followed by its analytics and Cloudflare bootstrapping as
+  literal script text (~6 KB each); shown under an answer in review that is a wall of JavaScript,
+  so `clean_text()` cuts at the first marker and the result is verified to be clean.
+- Titles are disambiguated: the 48th BCS is three files all titled "48th BCS", so they become
+  "… - Special Health General Part", "… - Medical Part", "… - Dental Part".
+
+If `exam.pack` is absent the app rebuilds papers from `knowledge.pack`'s answer-key passages
+(`প্রশ্ন: … ক) … উত্তর: …`) instead, so exam mode still works on a phone that only has the older
+pack. That fallback has no subjects or durations, so it is a second-best path.
+
+**Never commit `exam.pack`** — `*.pack` is git-ignored, and every source is personal-use only.
+

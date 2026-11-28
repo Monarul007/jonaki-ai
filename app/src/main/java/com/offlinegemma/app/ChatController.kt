@@ -140,6 +140,18 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     chatReset = scope.launch { gemma.startChat(history(shown.lines)) }
   }
 
+  /**
+   * Rebuild the open conversation after something else used the model.
+   *
+   * [GemmaEngine.oneShot] closes the open chat, so any caller outside this class (exam mode asking
+   * for an explanation) has to put it back - otherwise the next chat answer runs on a closed
+   * conversation.
+   */
+  fun resumeModel() {
+    if (!ready) return
+    chatReset = scope.launch { runCatching { gemma.startChat(history(shown.lines)) } }
+  }
+
   private val SELF_INTRO = Regex(
     "(?i)^\\s*jonaki a[i1]\\s*[,—-]?\\s*made by monarul[^\\n]*(\\.|।)\\s*",
   )

@@ -24,7 +24,7 @@ import com.offlinegemma.app.ui.AppTheme
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 
-enum class Screen { SETUP, CHAT, SETTINGS, ABOUT }
+enum class Screen { SETUP, CHAT, EXAM, SETTINGS, ABOUT }
 
 class MainActivity : ComponentActivity() {
   private val screenState = mutableStateOf<Screen?>(null)
@@ -76,6 +76,10 @@ class MainActivity : ComponentActivity() {
     // A study pack copied to the phone while the app was in the background gets indexed now,
     // without waiting for a restart. Unchanged packs do nothing.
     app.chat.refreshKnowledgeIfStale()
+    // An exam's clock is wall-clock, so time spent in the background is gone. Re-derive the
+    // remaining time on return (and grade the paper if the deadline passed meanwhile) rather than
+    // trusting a ticker that was paused with the process.
+    app.exam.resyncClock()
   }
 
   /**
@@ -380,7 +384,7 @@ class MainActivity : ComponentActivity() {
           LaunchedEffect(screen) {
             if (screen == Screen.CHAT && !ModelInfo.hasUsableModel(this@MainActivity)) screen = Screen.SETUP
           }
-          BackHandler(enabled = screen == Screen.SETTINGS || screen == Screen.ABOUT) {
+          BackHandler(enabled = screen == Screen.SETTINGS || screen == Screen.ABOUT || screen == Screen.EXAM) {
             screen = if (screen == Screen.ABOUT) Screen.SETTINGS else Screen.CHAT
           }
           if (talking.value) {
@@ -391,7 +395,17 @@ class MainActivity : ComponentActivity() {
           AnimatedContent(screen, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "screen") { s ->
             when (s) {
               Screen.SETUP -> OnboardingScreen(app.prefs, onModelReady = { screen = Screen.CHAT })
-              Screen.CHAT -> ChatScreen(app.chat, app.speaker, onSettings = { screen = Screen.SETTINGS }, onAbout = { screen = Screen.ABOUT }, onTalk = { startTalk() })
+              Screen.CHAT -> ChatScreen(
+                app.chat,
+                app.speaker,
+                onSettings = { screen = Screen.SETTINGS },
+                onAbout = { screen = Screen.ABOUT },
+                onTalk = { startTalk() },
+                onExam = { app.exam.backToList(); screen = Screen.EXAM },
+              )
+              // Exam mode keeps its own phase (list/brief/runner/result/review); the screen only
+              // hands it the back-out path.
+              Screen.EXAM -> ExamModeScreen(app.exam, onExit = { screen = Screen.CHAT })
               Screen.SETTINGS -> SettingsScreen(app, onBack = { screen = Screen.CHAT }, onAbout = { screen = Screen.ABOUT }, onModelDeleted = { screen = Screen.SETUP })
               Screen.ABOUT -> AboutScreen(onBack = { screen = Screen.SETTINGS })
             }

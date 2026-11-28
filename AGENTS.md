@@ -79,6 +79,7 @@ The history was rewritten once to remove 46 such lines; do not reintroduce them.
 | Voice | `Speaker.kt`, `VoiceSheet.kt`, `VoiceDetector.kt`, `TalkController.kt` |
 | Sandboxed code | `JsRunner.kt` (WebView, no network/file access) |
 | Persistence | `ChatStore.kt` (JSON files inside the app), `Settings.kt` (prefs) |
+| Exam mode | `ExamScoring.kt` (grading/mocks, pure), `Exams.kt` (exam.pack reader), `ExamAttempt.kt` (saved attempts), `ExamController.kt` (state/timer), `ExamMode.kt` (screens) |
 
 State lives in `App` (app-wide `GemmaEngine`, `ChatController`, `Speaker`, `TalkController`), so
 rotation/screens never reload the 2.6 GB model.
@@ -122,15 +123,24 @@ rotation/screens never reload the 2.6 GB model.
 
 ---
 
-## Current state (2026-11-21)
+## Current state (2026-11-28)
 
-- Version **1.0.3** / `versionCode 5` (1.0.3: answers as background jobs with a queue and "Answer ready" notices, general page reading, test bench in evals/).
+- Version **1.0.20** / `versionCode 22` (1.0.20: exam mode — real NTRCA/BCS papers and mocks with a
+  wall-clock timer, auto-grading, result breakdown and review with explanations).
+- Exam mode verified on a Redmi Note 15 Pro+ against a real debug build: 81 papers / 9,030 questions
+  listed from `exam.pack`; a 50-question mock resumed after `am force-stop` kept its answers and its
+  clock (01:52:09 left on return); submit graded 1 correct / 0 wrong / 49 skipped to a net of 1.0
+  with 0.5 per wrong; review marked the key green with ✓ and showed the paper's explanation, and a
+  question with none showed "Why this answer?"; the palette sheet jumped to any question.
 - In-app camera + model-wake fixes are committed on `main`.
 - Debug build verified on a Redmi Note 15 Pro+: PID unchanged across capture, no process-exit
   record, photo landed as a draft chip, model stayed loaded.
 - Known gaps from the plan: native LiteRT-LM tool calls (text protocol only), document/share
   paths not exercised on a phone, full agent loop not tested, Python/Chaquopy deliberately
   skipped for code execution (sandboxed JavaScript is used instead).
+- Exam mode gaps: the model-written explanation was not exercised on the phone (the dev build had
+  no model installed), and a mock is stored with its questions in the attempt file, so a mock is
+  reopened from the app's own copy rather than from the pack.
 
 ---
 

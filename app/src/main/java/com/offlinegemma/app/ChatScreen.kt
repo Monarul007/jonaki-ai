@@ -40,6 +40,7 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.RadioButtonUnchecked
@@ -107,7 +108,14 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, onAbout: () -> Unit, onTalk: () -> Unit) {
+fun ChatScreen(
+  chat: ChatController,
+  speaker: Speaker,
+  onSettings: () -> Unit,
+  onAbout: () -> Unit,
+  onTalk: () -> Unit,
+  onExam: () -> Unit,
+) {
   val drawer = rememberDrawerState(DrawerValue.Closed)
   val scope = rememberCoroutineScope()
   var input by rememberSaveable { mutableStateOf("") }
@@ -183,6 +191,7 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
         onNew = { chat.newChat(); scope.launch { drawer.close() } },
         onSettings = { scope.launch { drawer.close() }; onSettings() },
         onAbout = { scope.launch { drawer.close() }; onAbout() },
+        onExam = { scope.launch { drawer.close() }; onExam() },
       )
     },
   ) {
@@ -595,7 +604,14 @@ private fun LoadError(message: String, onRetry: () -> Unit, onChooseModel: () ->
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: () -> Unit, onSettings: () -> Unit, onAbout: () -> Unit) {
+private fun ChatDrawer(
+  chat: ChatController,
+  onPick: (String) -> Unit,
+  onNew: () -> Unit,
+  onSettings: () -> Unit,
+  onAbout: () -> Unit,
+  onExam: () -> Unit,
+) {
   var renaming by remember { mutableStateOf<ChatSummary?>(null) }
   var deleting by remember { mutableStateOf<ChatSummary?>(null) }
   // Bulk delete: pick several chats, or clear the whole history at once.
@@ -619,6 +635,13 @@ private fun ChatDrawer(chat: ChatController, onPick: (String) -> Unit, onNew: ()
         icon = { Icon(Icons.Rounded.Add, null) },
         selected = false,
         onClick = onNew,
+        modifier = Modifier.padding(horizontal = 12.dp),
+      )
+      NavigationDrawerItem(
+        label = { Text("Exam mode") },
+        icon = { Icon(Icons.Rounded.EditNote, null) },
+        selected = false,
+        onClick = onExam,
         modifier = Modifier.padding(horizontal = 12.dp),
       )
     }

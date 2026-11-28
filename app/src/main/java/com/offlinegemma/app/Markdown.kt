@@ -227,6 +227,92 @@ object Markdown {
     return s
   }
 
+  /**
+   * TeX `\over` -> a division.
+   *
+   * The exam papers in `exam.pack` write fractions as `a \over b` more often than with `\frac`
+   * (80 questions vs 74), and `\over` binds the whole group on each side rather than a single
+   * token: `{.1 \times .01 \over .2 \times .02}` is one quotient. A plain replace either leaves
+   * the command on screen or produces a wrong expression, so each side is taken as a balanced
+   * {...} group when it is braced, and otherwise as the run of characters up to the enclosing
+   * space or parenthesis/operator boundary.
+   */
+  private fun overToDivision(input: String): String {
+    var s = input
+    var guard = 0
+    while (guard++ < 64) {
+      val at = s.indexOf("\\over")
+      if (at < 0) break
+      // TeX's control word ends at the first non-letter, so "\over2" is "\over" then "2".
+      val start = at + 5
+      var end = start
+      while (end < s.length && s[end].isLetter()) end++
+
+      fun skipSpace(from: Int, step: Int): Int {
+        var j = from
+        while (j in s.indices && s[j].isWhitespace()) j += step
+        return j
+      }
+
+      // ---- left operand ----
+      var li = skipSpace(at - 1, -1)
+      var left = ""
+      if (li >= 0 && s[li] == '}') {
+        var depth = 0
+        var k = li
+        while (k >= 0) {
+          if (s[k] == '}') depth++
+          if (s[k] == '{') {
+            depth--
+            if (depth == 0) break
+          }
+          k--
+        }
+        if (k >= 0) {
+          left = s.substring(k + 1, li)
+          li = skipSpace(k - 1, -1)
+        }
+      } else {
+        var k = li
+        while (k >= 0 && !s[k].isWhitespace() && s[k] !in "()+-*/=,;") k--
+        left = s.substring(k + 1, li + 1)
+        li = k
+      }
+
+      // ---- right operand ----
+      var ri = skipSpace(end, 1)
+      var right = ""
+      if (ri < s.length && s[ri] == '{') {
+        var depth = 0
+        var k = ri
+        while (k < s.length) {
+          if (s[k] == '{') depth++
+          if (s[k] == '}') {
+            depth--
+            if (depth == 0) break
+          }
+          k++
+        }
+        if (k < s.length) {
+          right = s.substring(ri + 1, k)
+          ri = k + 1
+        }
+      } else {
+        var k = ri
+        while (k < s.length && !s[k].isWhitespace() && s[k] !in "()+-*/=,;") k++
+        right = s.substring(ri, k)
+        ri = k
+      }
+
+      // Neither side found: drop the command rather than leave it on screen.
+      if (left.isBlank() && right.isBlank()) { s = s.removeRange(at, end); continue }
+      val replacement = "($left)÷($right)"
+      val from = if (li >= 0 && s.getOrNull(li) == '{') li else li + 1
+      s = s.substring(0, from) + replacement + s.substring(ri)
+    }
+    return s
+  }
+
   /** TeX -> readable text with super/subscript markers (same rules as chat.html tex()). */
   fun tex(expr: String): String {
     var s = expr
@@ -235,6 +321,7 @@ object Markdown {
     s = s.replace("<=>", "⇌")
     s = unwrapTextCommands(s)
     repeat(3) { s = s.replace(Regex("""\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}"""), "($1)÷($2)") }
+    s = overToDivision(s)
     // A fraction reads as a division, which is "÷" in a textbook, not a slash — a slash turns
     // "২১০০ ÷ ১৪" into a file path and makes a two-part sum look like one number.
     s = s.replace(Regex("""\(([A-Za-z0-9.]+)\)÷\(([A-Za-z0-9.]+)\)"""), "$1 ÷ $2")
