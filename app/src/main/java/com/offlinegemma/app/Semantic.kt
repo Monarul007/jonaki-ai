@@ -54,6 +54,22 @@ object Semantic {
   const val LIMIT = 3
 
   /**
+   * How far the best passage must beat the best *irrelevant* one before it counts as evidence.
+   *
+   * 0.05 is deliberately small: it only has to separate "this page answers the question" from "this
+   * page shares a common word". Measured scores on a real pack sit ~0.75 for both, so an absolute
+   * floor cannot tell them apart — the gap between them can.
+   */
+  const val MARGIN = 0.05f
+
+  /**
+   * Scores closer together than this are the *same* answer, not one better than the other. Two pages
+   * both stating the fact land within a few thousandths of each other; a 0.005 spread among 0.83s is
+   * noise, while the 0.05 that separates an answer from the field is not.
+   */
+  private const val EPS = 0.005f
+
+  /**
    * EmbeddingGemma's documented task prefixes. Documents and questions are embedded with different
    * ones, which is what makes the two comparable. Both sides must use the pair below or the scores
    * drift toward each other and the gate stops meaning anything.
@@ -330,8 +346,16 @@ object Semantic {
   }
 
   /**
-   * The passages that clear [GATE] for [query], best first. Empty when nothing is relevant — which
-   * is the point: the answer then comes from the model instead of from an unrelated page.
+   * The passages that clear [GATE] *and* stand out from the field for [query], best first. Empty when
+   * nothing is relevant — which is the point: the answer then comes from the model instead of from an
+   * unrelated page.
+   *
+   * The absolute gate alone was not enough. Measured on this phone: "Tareq Rahman Bangladesh-er koto
+   * tomo prodhantromntri" scored 0.751 and **12 passages** cleared 0.70, because the pack is six
+   * million characters of exam papers where "প্রধানমন্ত্রী" appears 132 times. Taking the top three of
+   * that crowd returned a passage about Tajuddin Ahmad — and the answer then announced, confidently,
+   * that this came from the user's study files. On a query the pack cannot answer, relevance has to
+   * mean "clearly better than everything else", not "above a floor".
    */
   suspend fun search(context: Context, query: String, limit: Int = LIMIT): List<Hit> = withContext(Dispatchers.IO) {
     if (!ready) return@withContext emptyList()
@@ -355,12 +379,50 @@ object Semantic {
       if (dot >= GATE && dot > (best[e.passage] ?: 0f)) best[e.passage] = dot
       i += d
     }
+    val ranked = best.entries.sortedByDescending { it.value }
+    val clear = margin(ranked.map { it.value })
     // The best score even when nothing clears the gate: that is the only way to tell a query the
     // pack does not cover from a gate that is simply too high for the language.
-    Log.i(TAG, "search '${query.take(40)}': top=${"%.3f".format(top)} aboveGate=${best.size} (gate=$GATE)")
-    best.entries.sortedByDescending { it.value }.asSequence()
-      .mapNotNull { en -> passages.getOrNull(en.key)?.let { Hit(it, en.value) } }
+    Log.i(
+      TAG,
+      "search '${query.take(40)}': top=${"%.3f".format(top)} aboveGate=${best.size} " +
+        "kept=${clear.size}${if (clear.isEmpty() && ranked.isNotEmpty()) " (${reason(ranked.map { it.value })})" else ""} (gate=$GATE)",
+    )
+    clear.asSequence()
+      .mapNotNull { score -> ranked.firstOrNull { it.value == score }?.let { e -> passages.getOrNull(e.key)?.let { Hit(it, score) } } }
       .take(limit).toList()
+  }
+
+  /**
+   * Which of the scores that cleared [GATE] actually stand out, best first.
+   *
+   * Two ways a query can look relevant when it is not: nothing beats the second-best (a pack with no
+   * answer to this question still returns its least-bad page), or the field is a crowd (a common word
+   * makes dozens of passages score alike). So a kept score must clear the runner-up by [MARGIN] — or,
+   * when many tie, clear the best score that is *not* itself part of the tie.
+   *
+   * Pure and internal so a real score distribution can be a test rather than an anecdote.
+   */
+  internal fun margin(scores: List<Float>): List<Float> {
+    if (scores.isEmpty()) return emptyList()
+    // A single passage has no field to be compared with, so the absolute gate is all there is.
+    if (scores.size == 1) return scores
+    val sorted = scores.sortedDescending()
+    // The best score that joins the leader's tie is still the answer; the rival is the best score
+    // that does not. Comparing against the second value rejected a genuine two-passage tie.
+    val tied = sorted.takeWhile { sorted.first() - it <= EPS }
+    val rival = sorted.getOrNull(tied.size) ?: return tied.take(LIMIT)
+    val gap = sorted.first() - rival
+    if (gap < MARGIN) return emptyList()
+    return tied.take(LIMIT)
+  }
+
+  /** Why [margin] rejected everything, for the log line. */
+  private fun reason(scores: List<Float>): String {
+    val sorted = scores.sortedDescending()
+    val tied = sorted.takeWhile { sorted.first() - it <= EPS }
+    val rival = sorted.getOrNull(tied.size) ?: return "single hit"
+    return "top-rival=${"%.3f".format(sorted.first() - rival)} < $MARGIN"
   }
 
   private fun openEngine(context: Context): Int? {

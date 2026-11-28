@@ -371,8 +371,18 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** What the model should remember: user and model turns only (notices are for the screen). */
   private fun history(from: List<ChatLine>): List<Message> = from.filter { it.done && it.error == null }.mapNotNull {
     when (it.who) {
+      // A spoken turn stores the ~700 characters of *instructions* the model was given ("you can
+      // hear audio", the answer rules), because that is what it had to be sent. Replaying them as a
+      // user message is what filled a voice chat's context with English meta-text that the user never
+      // said; the clip itself is not in the rebuilt conversation either, so only a marker is honest.
       Who.USER -> Message.user(
-        if (it.attachments.any { a -> a.kind != Attachment.Kind.DOC }) "${it.text}\n[an image/audio clip was attached earlier]" else it.text,
+        when {
+          it.attachments.any { a -> a.kind == Attachment.Kind.AUDIO } ->
+            "(the user said this out loud: a voice clip, not stored in this conversation's history)"
+          it.attachments.any { a -> a.kind != Attachment.Kind.DOC } ->
+            "${it.text}\n[an image/audio clip was attached earlier]"
+          else -> it.text
+        },
       )
       Who.MODEL -> if (it.text.isNotBlank()) Message.model(it.text) else null
       Who.NOTICE -> null
@@ -629,13 +639,49 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         )
         // The user's own study material (Biddabari/Uttoron/NCTB/BPSC) searched on the phone.
         // Only the best few passages go in, so a 4k-token window still has room to answer.
-        // Voice answers stay conversational and skip this.
+        // A spoken turn counts too: asking "explain photosynthesis" out loud was answered from the
+        // model's own memory while the identical typed question cited the study files, which reads as
+        // the app ignoring what you fed it.
         var knowledge = ""
-        if (!voice) {
-          val q = (topic ?: asked).ifBlank { modelText }.take(400)
+        // A voice clip has no words to search with, so the model is the only thing that knows what was
+        // said. Ask it to write the clip down first; that phrasing is what the search uses.
+        val spoken = if (!voice || audio.isEmpty()) "" else {
+          // A known transcript instead of the model's guess, so a spoken turn can be compared with the
+          // same question typed. Without it, a wrong answer cannot be blamed on the right suspect.
+          forcedSpeech?.let { return@let it } ?: run {
+          status = "Listening…"
+          val said = runCatching {
+            gemma.oneShot(TRANSCRIBE_PROMPT, maxOutput = 80, audio = audio.first())
+          }.getOrDefault("").trim()
+          // oneShot runs in a throwaway conversation and closes it, so the real answer below would
+          // otherwise fail with "Model not loaded yet". Reopen the chat without this unanswered turn.
+          gemma.startChat(history(target.lines.dropLast(2)))
+          status = null
+          Log.i("ChatController", "voice clip says: '${said.take(120)}'")
+          said.takeIf { it.length in 2..200 && !it.equals("nothing", ignoreCase = true) } ?: ""
+          }
+        }
+        val searchFor = when {
+          topic != null -> topic
+          spoken.isNotBlank() -> spoken
+          !voice -> modelText      // typed with no words of its own (attachment only), as before
+          else -> ""
+        }
+        // What the user *said* is the message. A chat bubble reading "Voice message" tells them
+        // nothing, and the transcript is already the thing the answer is built from, so it is shown
+        // as an ordinary message instead of a clip. Only when nothing could be heard does the clip
+        // stay as the message.
+        if (spoken.isNotBlank()) {
+          // The user's line is the one allocated just before the answer's.
+          update(answerId - 1) { it.copy(display = spoken, topic = it.topic ?: spoken) }
+          save(target)   // or a reopen shows the clip again while the answer cites the transcript
+          Log.i("ChatController", "shown as a message: '${spoken.take(80)}'")
+        }
+        if (searchFor.isNotBlank()) {
+          val q = searchFor.take(400)
           // A sum must not be handed chemistry prose: the passage has to carry a number to be
           // relevant to arithmetic at all.
-          val numericHint = Tutor.looksNumeric(topic ?: asked)
+          val numericHint = Tutor.looksNumeric(searchFor)
           // Semantic search first: an absolute cosine gate (0.70), so an unrelated page is dropped
           // however good it looked beside the others. BM25 is the fallback when the embedder or its
           // index is not ready, never a second opinion after the gate rejected everything.
@@ -643,14 +689,18 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             runCatching { Semantic.search(app, q, Semantic.LIMIT) }.getOrDefault(emptyList())
               .map { it.passage }
           } else null
+          // BM25 has only a *relative* floor, so it always returns its best few candidates. For a
+          // spoken turn that would inject unrelated passages whenever the clip says nothing on topic;
+          // there, only a passage the semantic gate accepted counts.
           val rawHits = semantic
-            ?: runCatching { Knowledge.search(app, q, KNOWLEDGE_PASSAGES) }.getOrDefault(emptyList())
+            ?: if (voice) emptyList()
+            else runCatching { Knowledge.search(app, q, KNOWLEDGE_PASSAGES) }.getOrDefault(emptyList())
           // The evidence rules apply to both paths. BM25's floor is relative to its own best hit, so
           // with every candidate weak the best of them still passed — that is how chemistry prose
           // reached a ratio sum. For a numeric question the passage must at least carry a number,
           // and preferably the question's own most specific one (9800, not just any digit).
           fun hasDigit(p: Knowledge.Passage) = p.text.any { c -> c in '0'..'9' || c in '০'..'৯' }
-          val keyNumber = numbersOf(topic ?: asked).maxByOrNull { it.length }
+          val keyNumber = numbersOf(searchFor).maxByOrNull { it.length }
           val hits = when {
             !numericHint -> rawHits
             keyNumber != null -> rawHits.filter {
@@ -660,11 +710,17 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           if (hits.isNotEmpty()) {
             knowledge = buildString {
+              // "Say it comes from my study files" was an instruction to *claim*, not to check: a
+              // question the pack cannot answer still got "according to your study files" over a
+              // passage that had only a word in common (Tajuddin Ahmad for Tareq Rahman). Now the
+              // credit is conditional on the passage actually containing the fact.
               append("[Reference material from my own study files, copied onto this phone. ")
-              append("Use it when it answers the question. If it does not cover the question, ")
-              append("ignore it and answer normally. When you use it, say plainly that the answer ")
-              append("comes from my study files; never credit a website or book that is not in it, ")
-              append("and do not invent a source.]\n")
+              append("Use a passage ONLY if it actually states what was asked. If the passages do ")
+              append("not contain the answer, ignore them completely and answer from your own ")
+              append("knowledge instead. Only when you take a fact from a passage may you say it ")
+              append("comes from my study files; if you did not, never mention my study files at ")
+              append("all. Never credit a website or book that is not in the list, and do not ")
+              append("invent a source.]\n")
               hits.forEach { h ->
                 append("\n<${h.source} · ${h.title}>\n")
                 append(h.text.take(KNOWLEDGE_CHARS))
@@ -777,6 +833,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val agent = agentAllowed && webBlock.isBlank()
         val text = buildString {
           append(modelText)
+          // The clip itself is what the model hears, but its words are what the study files are
+          // searched with, so both go in: the recording, and the written form of it.
+          if (spoken.isNotBlank()) {
+            append("\n\n[I said this out loud. What I said, written down: \"")
+            append(spoken.trim())
+            append("\"]")
+          }
           // Verified numbers come first: a note placed after a page of study material was ignored.
           if (calcNote.isNotBlank()) append("\n\n").append(calcNote)
           if (knowledge.isNotBlank()) append("\n\n").append(knowledge)
@@ -1860,6 +1923,31 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   companion object {
     const val CHARS_PER_TOKEN = 4
+
+    /**
+     * How a spoken clip is written down.
+     *
+     * The first version ("write down what this says") came back Romanised every time — measured on the
+     * phone: `Tariq Rahman Bangladesh-er koto tomo prodhantromntri`. That text is what the study files
+     * are searched with, and the study files are Bengali, so the words that carry the question
+     * ("কত তম" — how many-th) were lost: the search matched "প্রথম" (first) and answered about
+     * Tajuddin Ahmad. Naming the script is the cheapest fix; the model still has to hear the words.
+     */
+    const val TRANSCRIBE_PROMPT =
+      "Write down exactly what this voice recording says. " +
+        "Write Bengali in Bengali letters — never in English letters (no \"Bangladesh-er\", no " +
+        "\"koto\"). Write English words in English letters. Keep the speaker's words unchanged; do " +
+        "not translate and do not tidy the grammar. If there is no clear speech, answer: nothing"
+
+    /**
+     * Developer builds only: pretend a voice clip said exactly this.
+     *
+     * Decides whether a wrong spoken answer comes from the transcriber or from everything downstream
+     * of it. A perfect transcript can be fed while the audio is still supplied, so the two runs differ
+     * only in the words the study files are searched with. Also the harness for comparing a real ASR
+     * model against the current 2B-model transcription.
+     */
+    @Volatile var forcedSpeech: String? = null
 
     /** Every number of two or more digits in [text], ASCII-normalised. */
     fun numbersOf(text: String): List<String> =

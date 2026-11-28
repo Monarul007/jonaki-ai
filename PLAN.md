@@ -198,6 +198,35 @@ and warn on phones under 8 GB ("This phone may be too small"). In the
 Play Console we can also block phones with too little RAM (device catalog
 rules), so people don't get a broken app.
 
+### Which models a phone is offered (2026-11-28, corrected the same day)
+
+| Question | Signal | Effect |
+|---|---|---|
+| Is there room on disk? | free storage vs file size | **The only hard gate.** No space ⇒ not offered. |
+| Is this phone comfortable with the model? | `totalMem` vs the model's peak working set | **Warning only.** Shown on the download screen and in Settings. |
+
+| Model | Peak working set (warning line) | Comfortable at | Offered on |
+|---|---|---|---|
+| Gemma 4 E2B | 3.5 GB (measured: loaded on a 4 GB OPPO) | 7 GB | any supported phone |
+| Gemma 4 E4B | 11 GB | 12 GB | any phone with the storage — warned below 11 GB |
+
+**The correction matters.** The first version made total RAM a hard gate and refused E4B below 11 GB,
+because an 8 GB Redmi was made unusable by it (LMKD kept closing System UI). Then a **moto edge 50
+fusion with the same 7.56 GB** ran E4B steadily: Snapdragon 7s Gen 3, Adreno 710, `MemAvailable`
+3.1 GB versus the Redmi's 1.16 GB, and **5.67 GB of swap**. Same total, opposite outcome — so total
+RAM is not the verdict, and a gate on it withheld a model from phones that run it well. Now the app
+offers it, warns from the measured working set, and lets the phone settle it at load time; a failure
+is a sentence in `chat.loadError`, not a kernel kill.
+
+Two bugs this uncovered:
+- `GemmaEngine` chose its audio mode from `slow(context, model)`, so E4B on a 7.5 GB phone silently
+  loaded as `GPU + image` — talk mode would have stopped hearing. It now keys on the **phone**.
+- `roomyEnough` had no pure core, so the threshold could not be unit-tested; it does now.
+
+Retrieval was also fixed: the absolute 0.70 cosine gate passed 12–15 passages for a query the pack
+cannot answer, so a question about Tareq Rahman returned "Tajuddin Ahmad" tagged as coming from the
+study files. `Semantic.margin()` now requires the winners to beat the field by 0.05.
+
 ## 8. Play Store checklist
 
 - [ ] **Target Android 16 (API 36)** — required for new apps/updates since 31 Aug 2026. (Our scaffold targets 36.)

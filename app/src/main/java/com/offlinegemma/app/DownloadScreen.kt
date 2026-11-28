@@ -10,7 +10,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,19 +25,23 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.SdStorage
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material.icons.rounded.WifiOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -51,6 +57,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -60,6 +67,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.work.WorkInfo
@@ -80,9 +88,16 @@ fun OnboardingScreen(prefs: Prefs, onModelReady: () -> Unit) {
     },
     label = "onboarding",
   ) { p ->
-    if (p == 0) WelcomePage(onNext = { prefs.onboarded = true; page = 1 })
-    else if (ModelInfo.installed(context).isNotEmpty()) onModelReady()
-    else DownloadPage(prefs, onBack = { page = 0 }, onModelReady = onModelReady)
+    if (p == 0) {
+      WelcomePage(onNext = { prefs.onboarded = true; page = 1 })
+    } else {
+      // Skip the download screen when a model this phone can actually run is already here. Asking
+      // "is any file downloaded" was not the same question: a file left by an older build can be too
+      // large to load, and that made the app bounce between setup and chat forever.
+      val usable = remember { ModelInfo.hasUsableModel(context) }
+      LaunchedEffect(usable) { if (usable) onModelReady() }
+      if (!usable) DownloadPage(prefs, onBack = { page = 0 }, onModelReady = onModelReady)
+    }
   }
 }
 
@@ -116,39 +131,53 @@ private fun WelcomePage(onNext: () -> Unit) {
   }
 }
 
+/**
+ * The one-time download screen. It offers exactly the models this phone can install, says how much
+ * memory each one needs next to how much the phone has, and refuses anything that would make the
+ * phone itself unreliable. That last part is not advice: running a model bigger than the phone's
+ * memory let Android's low-memory killer close System UI on an 8 GB test phone.
+ */
 @Composable
 private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> Unit) {
   val context = LocalContext.current
-  val installables = remember { ModelInfo.installableModels(context) }
-  // The one-time download screen only ever offers models that fit this phone right now; a phone that
-  // is short of memory or space gets the honest list (empty) rather than a button that cannot run.
-  val target = installables.firstOrNull { it == prefs.model } ?: installables.firstOrNull() ?: ChatModel.E2B
-  var refresh by remember { mutableIntStateOf(0) } // bumps storage numbers after pause/cancel
-  val infos by WorkManager.getInstance(context)
-    .getWorkInfosForUniqueWorkFlow(DL.uniqueName(target.name))
-    .collectAsState(initial = emptyList())
-  val info = infos.firstOrNull()
+  var refresh by remember { mutableIntStateOf(0) } // bumps the memory/space numbers and the list
+  val installable = remember(refresh) { ModelInfo.installable(context) }
+  val oversized = remember(refresh) { ModelInfo.oversizedInstalled(context) }
+  val target = installable.firstOrNull { it == prefs.model } ?: installable.firstOrNull()
 
+  val manager = WorkManager.getInstance(context)
+  // Which row asked. The permission dialog answers asynchronously, so the tapped model has to be
+  // remembered; starting the preferred model here would download the wrong one.
+  var pending by remember { mutableStateOf<ChatModel?>(null) }
   val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-    DL.start(context, prefs.wifiOnly, target.name) // start either way; the notification is optional
+    (pending ?: target)?.let { DL.start(context, prefs.wifiOnly, it.name) } // start either way; the notification is optional
+    pending = null
   }
 
-  fun startDownload() {
-    if (Build.VERSION.SDK_INT >= 33) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-    else DL.start(context, prefs.wifiOnly, target.name)
+  fun startDownload(m: ChatModel) {
+    if (Build.VERSION.SDK_INT >= 33) {
+      pending = m
+      notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    } else {
+      DL.start(context, prefs.wifiOnly, m.name)
+    }
   }
 
-  LaunchedEffect(info?.state) {
-    if (info?.state == WorkInfo.State.SUCCEEDED && ModelInfo.isDownloaded(context, target)) onModelReady()
-    refresh++
+  // Wait for whichever model actually finishes, not just the preferred one: downloading the second
+  // row must still take the user into the app.
+  for (m in installable) {
+    val flow = remember(m) { manager.getWorkInfosForUniqueWorkFlow(DL.uniqueName(m.name)) }
+    val infos by flow.collectAsState(initial = emptyList())
+    LaunchedEffect(infos.firstOrNull()?.state) {
+      if (infos.firstOrNull()?.state == WorkInfo.State.SUCCEEDED && ModelInfo.isDownloaded(context, m)) onModelReady()
+    }
   }
 
-  val partBytes = remember(refresh, info?.state) { ModelInfo.partFile(context, target).length() }
-  val free = remember(refresh, info?.state) { ModelInfo.freeBytes(context) }
-  val needed = remember(refresh, info?.state) { ModelInfo.bytesNeeded(context, target) }
-  val ram = remember { ModelInfo.totalRamBytes(context) }
-  val availRam = remember { ModelInfo.availableRamBytes(context) }
+  val free = remember(refresh) { ModelInfo.freeBytes(context) }
+  val ram = remember(refresh) { ModelInfo.totalRamBytes(context) }
+  val tight = remember(refresh) { ModelInfo.lowMemory(context) }
   val extra = LocalExtraColors.current
+  var confirmRemove by remember { mutableStateOf<ChatModel?>(null) }
 
   Column(
     Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 8.dp),
@@ -157,55 +186,78 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") }
     Text("One-time download", style = MaterialTheme.typography.headlineMedium)
     Text(
-      "Jonaki AI can run ${installables.size} model${if (installables.size == 1) "" else "s"} on this phone. " +
-        "It is saved inside this app only, checked for damage, and then everything works offline.",
+      when {
+        installable.isEmpty() && oversized.isEmpty() ->
+          "This phone cannot run Jonaki AI at the moment. There is nothing to download yet."
+        installable.size == 1 && installable.first() == ModelInfo.DEFAULT ->
+          "One download and everything works offline. This phone can run 1 model, shown below."
+        else ->
+          "One download and everything works offline. " +
+            "This phone can run ${installable.size} model${if (installable.size == 1) "" else "s"}, best first."
+      },
       style = MaterialTheme.typography.bodyLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 
-    if (installables.isEmpty()) {
-      Text(
-        "No Jonaki AI model fits this phone right now.",
-        style = MaterialTheme.typography.titleMedium,
-        color = MaterialTheme.colorScheme.error,
-      )
-      Text(
-        "Memory: ${formatBytes(ram)} total, ${formatBytes(availRam)} available. Storage: ${formatBytes(free)} free, about ${formatBytes(needed)} needed. Jonaki AI needs roughly ${formatBytes(ChatModel.E2B.SIZE_BYTES)} plus headroom, so free some memory or space before retrying.",
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-    } else {
-      Column(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-      ) {
-        for (m in installables) {
-          val here = ModelInfo.isDownloaded(context, m)
-          val running = prefs.model == m
-          Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-              if (running) Icons.Rounded.CheckCircle else Icons.Rounded.CloudDownload,
-              null,
-              tint = MaterialTheme.colorScheme.primary,
-            )
-            Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-              Text(
-                m.label + if (running) " — in use" else "",
-                style = MaterialTheme.typography.titleSmall,
-              )
-              Text(
-                if (here) "Installed, ${formatBytes(m.SIZE_BYTES)}. ${m.speed}."
-                else "Not installed · ${formatBytes(m.SIZE_BYTES)} · ${m.speed}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-            if (!here && !running) {
-              OutlinedButton(onClick = { DL.start(context, prefs.wifiOnly, m.name) }) {
-                Text("Download", style = MaterialTheme.typography.labelLarge)
-              }
+    // A model that is on the phone and bigger than this phone is *comfortable* with. Advice only:
+    // two identical 7.56 GB phones disagree about E4B — one struggled, one ran it steadily — so the
+    // app never claims it "cannot run" or pushes the user to delete it. It is still selectable.
+    for (m in oversized) {
+      SoftCard(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.WarningAmber, null, tint = MaterialTheme.colorScheme.tertiary)
+            Spacer(Modifier.size(12.dp))
+            Text("${m.label} is a big model for this phone", style = MaterialTheme.typography.titleSmall)
+          }
+          Text(
+            "It wants about ${formatBytes(m.minTotalRamBytes)} of memory and this phone has " +
+              "${formatBytes(ram)}. Many phones run it fine anyway; if this one becomes slow or " +
+              "unstable, switch back to ${ModelInfo.DEFAULT.label} or remove it (frees ${formatBytes(m.SIZE_BYTES)}).",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = { prefs.model = m; onModelReady() }) { Text("Use it") }
+            OutlinedButton(onClick = { confirmRemove = m }) {
+              Icon(Icons.Rounded.DeleteOutline, null)
+              Spacer(Modifier.size(8.dp))
+              Text("Remove")
             }
           }
+        }
+      }
+    }
+
+    if (installable.isEmpty()) {
+      EmptyFit(ram, free)
+    } else {
+      Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        for (m in installable) {
+          val here = ModelInfo.isDownloaded(context, m)
+          // Each row watches its own job, so downloading the second model shows its own progress and
+          // pausing it cannot touch the first model's download.
+          val infos by remember(m) { manager.getWorkInfosForUniqueWorkFlow(DL.uniqueName(m.name)) }
+            .collectAsState(initial = emptyList())
+          val info = infos.firstOrNull()
+          val part = remember(refresh, info?.state) { ModelInfo.partFile(context, m).length() }
+          ModelRow(
+            m = m,
+            installed = here,
+            running = prefs.model == m && here,
+            recommended = m == ModelInfo.DEFAULT,
+            slow = ModelInfo.slow(context, m),
+            busy = ModelInfo.busy(context),
+            phoneRam = ram,
+            inProgress = info?.state == WorkInfo.State.RUNNING ||
+              info?.state == WorkInfo.State.ENQUEUED || info?.state == WorkInfo.State.BLOCKED,
+            partBytes = part,
+            free = free,
+            info = info,
+            prefs = prefs,
+            onStart = { startDownload(m) },
+            onDeletePart = { ModelInfo.partFile(context, m).delete(); refresh++ },
+          )
         }
       }
     }
@@ -213,59 +265,171 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
     SoftCard(Modifier.fillMaxWidth()) {
       Column(Modifier.padding(vertical = 8.dp)) {
         CheckRow(
-          Icons.Rounded.SdStorage,
-          "Storage",
-          "${formatBytes(free)} free · needs ${formatBytes(needed)}",
-          ok = free >= needed,
-          okColor = extra.ok,
-        )
-        HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
-        val bigPhone = availRam >= ModelInfo.MIN_RAM_BYTES
-        CheckRow(
-          if (bigPhone) Icons.Rounded.Memory else Icons.Rounded.Speed,
+          Icons.Rounded.Memory,
           "Memory",
-          if (bigPhone) "${formatBytes(ram)} of memory available · great for Jonaki AI"
-          else "${formatBytes(ram)} of memory available · Jonaki AI works, but answers come slowly (a few words a second). Phones with 8 GB are faster.",
-          ok = if (bigPhone) true else null,
+          "${formatBytes(ram)} in total · " +
+            if (tight) "the phone is short of memory right now, so close other apps first."
+            else "plenty for Jonaki AI." +
+              if (installable.isNotEmpty()) " The model offered needs about ${formatBytes(installable.first().minTotalRamBytes)}."
+              else "",
+          ok = installable.isNotEmpty() && !tight,
           okColor = extra.ok,
         )
-        HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
-        Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-          Icon(Icons.Rounded.Wifi, null, tint = MaterialTheme.colorScheme.primary)
-          Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
-            Text("Wi-Fi only", style = MaterialTheme.typography.titleSmall)
-            Text(
-              if (prefs.wifiOnly) "Waits for Wi-Fi, so it never uses mobile data."
-              else "Mobile data may cost money. Uses up to ${formatBytes(target.SIZE_BYTES - partBytes)}.",
-              style = MaterialTheme.typography.bodySmall,
-              color = if (prefs.wifiOnly) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
-            )
+        // Storage only means something once there is a model to download.
+        if (target != null && !ModelInfo.isDownloaded(context, target)) {
+          HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+          CheckRow(
+            Icons.Rounded.SdStorage,
+            "Storage",
+            "${formatBytes(free)} free · needs ${formatBytes(ModelInfo.bytesNeeded(context, target))} for ${target.label}",
+            ok = free >= ModelInfo.bytesNeeded(context, target),
+            okColor = extra.ok,
+          )
+          HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+          Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.Wifi, null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
+              Text("Wi-Fi only", style = MaterialTheme.typography.titleSmall)
+              Text(
+                if (prefs.wifiOnly) "Waits for Wi-Fi, so it never uses mobile data."
+                else "Mobile data may cost money. Uses up to ${formatBytes(target.SIZE_BYTES)}.",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (prefs.wifiOnly) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+              )
+            }
+            Switch(checked = prefs.wifiOnly, onCheckedChange = { prefs.wifiOnly = it })
           }
-          Switch(checked = prefs.wifiOnly, onCheckedChange = { prefs.wifiOnly = it })
         }
       }
     }
+    Spacer(Modifier.height(8.dp))
+  }
 
-    when (info?.state) {
-      WorkInfo.State.RUNNING -> Running(info)
-      WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED -> {
-        Progress(partBytes.toFloat() / target.SIZE_BYTES)
-        Text(
-          if (info.runAttemptCount > 0) "Connection lost. It will carry on by itself when the network is back…"
-          else if (prefs.wifiOnly) "Waiting for Wi-Fi…" else "Waiting for internet…",
-          style = MaterialTheme.typography.bodyMedium,
+  confirmRemove?.let { victim ->
+    AlertDialog(
+      onDismissRequest = { confirmRemove = null },
+      title = { Text("Remove ${victim.label}?") },
+      text = { Text("This frees ${formatBytes(victim.SIZE_BYTES)}. Your chats stay, and the app keeps working with a model that fits this phone.") },
+      confirmButton = {
+        TextButton(onClick = {
+          confirmRemove = null
+          ModelInfo.delete(context, victim)
+          prefs.usableModel()
+          refresh++
+        }) { Text("Remove") }
+      },
+      dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text("Keep") } },
+    )
+  }
+}
+
+/** One installable model: what it is, what it costs, and whether this phone is comfortable with it. */
+@Composable
+private fun ModelRow(
+  m: ChatModel,
+  installed: Boolean,
+  running: Boolean,
+  recommended: Boolean,
+  slow: Boolean,
+  busy: Boolean,
+  phoneRam: Long,
+  inProgress: Boolean,
+  partBytes: Long,
+  free: Long,
+  info: WorkInfo?,
+  prefs: Prefs,
+  onStart: () -> Unit,
+  onDeletePart: () -> Unit,
+) {
+  val extra = LocalExtraColors.current
+  SoftCard(Modifier.fillMaxWidth()) {
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+          if (running) Icons.Rounded.CheckCircle else if (installed) Icons.Rounded.SdStorage else Icons.Rounded.CloudDownload,
+          null,
+          tint = MaterialTheme.colorScheme.primary,
         )
-        OutlinedButton(onClick = { DL.pause(context, target.name) }, Modifier.fillMaxWidth().height(52.dp)) { Text("Pause") }
+        Spacer(Modifier.size(12.dp))
+        Text(m.label, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        if (recommended) Pill("Recommended", MaterialTheme.colorScheme.primary)
+        if (running) {
+          Spacer(Modifier.size(6.dp))
+          Pill("In use", extra.ok)
+        }
       }
-      else -> Idle(
-        info = info,
-        partBytes = partBytes,
-        enoughSpace = free >= needed,
-        onStart = ::startDownload,
-        onDeletePart = { ModelInfo.partFile(context, target).delete(); refresh++ },
+      Text(
+        "${formatBytes(m.SIZE_BYTES)} · ${m.speed}",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      // The honest capacity line: what it needs, what the phone has. This is the bit that makes the
+      // choice obvious instead of a leap of faith.
+      Text(
+        "Needs about ${formatBytes(m.minTotalRamBytes)} of memory · this phone has ${formatBytes(phoneRam)}",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      if (slow) {
+        Text(
+          "Runs, but answers come a few words a second on this phone.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.tertiary,
+        )
+      }
+      if (busy && !installed) {
+        Text(
+          "Another app is using memory right now. Close it before starting for the best result.",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.tertiary,
+        )
+      }
+      // The action area is the same slot whether this model is downloading or idle, so one row can
+      // never show two Download buttons.
+      when {
+        installed -> Unit
+        info?.state == WorkInfo.State.RUNNING -> Running(m, info)
+        inProgress -> Waiting(m, info, prefs)
+        else -> Idle(m = m, info = info, partBytes = partBytes, free = free, onStart = onStart, onDeletePart = onDeletePart)
+      }
+    }
+  }
+}
+
+/** Nothing on this phone fits. Say which number is short, and what to do about it. */
+@Composable
+private fun EmptyFit(ram: Long, free: Long) {
+  SoftCard(Modifier.fillMaxWidth()) {
+    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Rounded.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
+        Spacer(Modifier.size(12.dp))
+        Text("Not enough room for a model", style = MaterialTheme.typography.titleSmall)
+      }
+      Text(
+        "Jonaki AI's smallest model needs about ${formatBytes(ChatModel.E2B.minTotalRamBytes)} of memory, " +
+          "and this phone has ${formatBytes(ram)} in total, with ${formatBytes(free)} of storage.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+      Text(
+        "This screen only offers models the phone can run, so nothing can be installed here. " +
+          "On a phone with more memory, come back and the model will appear.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
     }
-    Spacer(Modifier.height(8.dp))
+  }
+}
+
+@Composable
+private fun Pill(text: String, color: Color) {
+  Box(
+    Modifier
+      .background(color.copy(alpha = 0.14f), RoundedCornerShape(50))
+      .padding(horizontal = 10.dp, vertical = 4.dp),
+  ) {
+    Text(text, style = MaterialTheme.typography.labelSmall, color = color, fontWeight = FontWeight.Medium)
   }
 }
 
@@ -288,7 +452,7 @@ private fun CheckRow(icon: ImageVector, title: String, body: String, ok: Boolean
 @Composable
 private fun Progress(fraction: Float) {
   LinearProgressIndicator(
-    progress = { fraction },
+    progress = { fraction.coerceIn(0f, 1f) },
     modifier = Modifier.fillMaxWidth().height(10.dp),
     strokeCap = StrokeCap.Round,
     gapSize = 0.dp,
@@ -296,8 +460,12 @@ private fun Progress(fraction: Float) {
   )
 }
 
+/**
+ * Live progress for [m]. Every number here comes from [m], never from the default model: the previous
+ * version divided E4B's bytes by E2B's size and paused E2B's work by name.
+ */
 @Composable
-private fun Running(info: WorkInfo) {
+private fun Running(m: ChatModel, info: WorkInfo) {
   val context = LocalContext.current
   val p = info.progress
   if (p.getString(DL.KEY_PHASE) == DL.PHASE_VERIFYING) {
@@ -305,15 +473,15 @@ private fun Running(info: WorkInfo) {
     LinearProgressIndicator(Modifier.fillMaxWidth().height(10.dp), strokeCap = StrokeCap.Round)
     return
   }
-  val bytes = p.getLong(DL.KEY_BYTES, ModelInfo.partFile(context).length())
+  val bytes = p.getLong(DL.KEY_BYTES, ModelInfo.partFile(context, m).length())
   val rate = p.getLong(DL.KEY_RATE, 0)
   val left = p.getLong(DL.KEY_LEFT_MS, -1)
-  val pct = bytes.toFloat() / ModelInfo.SIZE_BYTES
+  val pct = bytes.toFloat() / m.SIZE_BYTES
   Row(verticalAlignment = Alignment.Bottom) {
     Text("${(pct * 100).toInt()}%", style = MaterialTheme.typography.displaySmall)
     Spacer(Modifier.size(12.dp))
     Text(
-      "${formatBytes(bytes)} of ${formatBytes(ModelInfo.SIZE_BYTES)}",
+      "${formatBytes(bytes)} of ${formatBytes(m.SIZE_BYTES)}",
       style = MaterialTheme.typography.bodyMedium,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
       modifier = Modifier.padding(bottom = 6.dp),
@@ -332,32 +500,49 @@ private fun Running(info: WorkInfo) {
     style = MaterialTheme.typography.bodySmall,
     color = MaterialTheme.colorScheme.onSurfaceVariant,
   )
-  OutlinedButton(onClick = { DL.pause(context) }, Modifier.fillMaxWidth().height(52.dp)) { Text("Pause") }
+  OutlinedButton(onClick = { DL.pause(context, m.name) }, Modifier.fillMaxWidth().height(52.dp)) { Text("Pause") }
 }
 
 @Composable
-private fun Idle(info: WorkInfo?, partBytes: Long, enoughSpace: Boolean, onStart: () -> Unit, onDeletePart: () -> Unit) {
+private fun Waiting(m: ChatModel, info: WorkInfo?, prefs: Prefs) {
+  val context = LocalContext.current
+  val part = ModelInfo.partFile(context, m).length()
+  Progress(part.toFloat() / m.SIZE_BYTES)
+  Text(
+    when {
+      (info?.runAttemptCount ?: 0) > 0 -> "Connection lost. It will carry on by itself when the network is back…"
+      prefs.wifiOnly -> "Waiting for Wi-Fi…"
+      else -> "Waiting for internet…"
+    },
+    style = MaterialTheme.typography.bodyMedium,
+  )
+  OutlinedButton(onClick = { DL.pause(context, m.name) }, Modifier.fillMaxWidth().height(52.dp)) { Text("Pause") }
+}
+
+@Composable
+private fun Idle(m: ChatModel, info: WorkInfo?, partBytes: Long, free: Long, onStart: () -> Unit, onDeletePart: () -> Unit) {
   if (info?.state == WorkInfo.State.FAILED) {
     Text(info.outputData.getString(DL.KEY_ERROR) ?: "Download failed.", color = MaterialTheme.colorScheme.error)
   }
+  val enoughSpace = free >= ModelInfo.bytesNeeded(LocalContext.current, m)
   if (!enoughSpace) {
     Text("Not enough free space. Free up some space, then come back.", color = MaterialTheme.colorScheme.error)
   }
   val paused = partBytes > 0
   if (paused) {
-    Progress(partBytes.toFloat() / ModelInfo.SIZE_BYTES)
+    Progress(partBytes.toFloat() / m.SIZE_BYTES)
     Text("Paused at ${formatBytes(partBytes)}", style = MaterialTheme.typography.bodyMedium)
   }
-  Button(onClick = onStart, enabled = enoughSpace, modifier = Modifier.fillMaxWidth().height(56.dp)) {
+  Button(onClick = onStart, enabled = enoughSpace, modifier = Modifier.fillMaxWidth().height(48.dp)) {
     Icon(Icons.Rounded.CloudDownload, null)
     Spacer(Modifier.size(10.dp))
     Text(
       when {
         paused -> "Resume download"
         info?.state == WorkInfo.State.FAILED -> "Try again"
-        else -> "Download (${formatBytes(ModelInfo.SIZE_BYTES)})"
+        else -> "Download ${formatBytes(m.SIZE_BYTES)}"
       },
-      style = MaterialTheme.typography.titleMedium,
+      style = MaterialTheme.typography.titleSmall,
     )
   }
   if (paused) {

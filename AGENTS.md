@@ -72,12 +72,24 @@ rotation/screens never reload the 2.6 GB model.
 2. **Keep model loading in `MainActivity.onResume`.** It is a post-process-death safety net;
    `loadModel()` is idempotent. Loading only from the chat screen left the app stuck on
    “Waking up” if the process was killed while another app was in front.
-3. **`modelFile` / `SIZE_BYTES` / `SHA256` are pinned to E2B.** Do not swap in E4B: 3.4 GB and
-   ~8.3 GB working set will not fit an 8 GB phone. The phone app expects the exact byte size.
+3. **A model's memory figure is advice, never a permission.** `ChatModel.minTotalRamBytes` is only
+   the *warning* threshold. It used to be a hard gate — E4B was withheld below 11 GB total RAM because
+   an 8 GB Redmi was made unusable by it — and a second phone disproved that: a **moto edge 50 fusion
+   reports the same 7.56 GB** (Snapdragon 7s Gen 3, Adreno 710, 3.1 GB free, **5.7 GB swap**) and runs
+   E4B steadily, `GPU + image + audio`, in ~30 s. Total RAM cannot separate those two phones, so it
+   cannot be the verdict. What actually holds:
+   - **Storage** is the only hard requirement (`Fit.NO_STORAGE`).
+   - Every installed model is loadable; the phone decides at load time. A failure surfaces as
+     `chat.loadError` with a sentence, never as a crash or a silent kernel kill.
+   - `roomyEnough()` drives warnings only (download screen, Settings). It must never filter a model
+     out of `installable()` or refuse a load.
+   - `tightPhone` in `GemmaEngine` (audio in/out) keys on **the phone**, not on the model: keying it
+     on the model's recommendation silently dropped audio for E4B on a 7.5 GB phone.
 4. **One conversation at a time.** `GemmaEngine.oneShot()` closes the open chat; callers must
    rebuild it afterwards (`startChat(history(lines))`).
 5. **Compact before the window overflows.** `compactIfNeeded()` keeps recent turns verbatim and
-   summarises older ones; `maxTokens` is 8192 on ≥7 GB RAM, 4096 otherwise.
+   summarises older ones; `maxTokens` is `model.maxTokens`, halved below that model's
+   `recommendedRamBytes` (8192 → 4096 for E2B, 4096 → 2048 for E4B).
 6. **Keep the model file out of git.** It is downloaded and verified on device; `.gitignore`
    already excludes `*.litertlm` and caches.
 7. **Release signing is external.** Do not generate or commit a key to “make it build”; an

@@ -9,6 +9,8 @@ local.properties
 *.keystore
 keystore.properties
 signing.properties
+# Holds the release key's passwords. Never commit it.
+offlinegemma.properties
 *.apk
 *.aab
 shots-*.png

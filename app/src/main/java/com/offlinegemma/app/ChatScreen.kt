@@ -50,6 +50,10 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
+import androidx.compose.material.icons.rounded.KeyboardArrowUp
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -78,8 +82,10 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -257,7 +263,11 @@ fun ChatScreen(chat: ChatController, speaker: Speaker, onSettings: () -> Unit, o
     ) { pad ->
       Box(Modifier.fillMaxSize().padding(pad)) {
         when {
-          chat.loadError != null -> LoadError(chat.loadError!!, onRetry = { chat.loadModel() })
+          chat.loadError != null -> LoadError(
+            chat.loadError!!,
+            onRetry = { chat.loadModel() },
+            onChooseModel = onSettings,
+          )
           chat.lines.isEmpty() -> HomeScreen(
             chat = chat,
             loading = !chat.ready,
@@ -344,13 +354,18 @@ private fun UserBubble(line: ChatLine, onOpen: (ViewItem) -> Unit, onLongPress: 
   androidx.compose.foundation.layout.BoxWithConstraints(Modifier.fillMaxWidth()) {
   val maxBubble = maxWidth * 0.8f
   Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-    if (line.attachments.isNotEmpty()) {
+    // A spoken turn whose words are known is one messenger-style bubble: the transcript is the text,
+    // with a playable clip under it. Chips are for pictures and documents only — a "Voice message"
+    // chip above the same message read as a second, empty one.
+    val said = line.attachments.firstOrNull { it.kind == Attachment.Kind.AUDIO }
+    val chips = line.attachments.filter { it.kind != Attachment.Kind.AUDIO }
+    if (chips.isNotEmpty()) {
       androidx.compose.foundation.layout.FlowRow(
         horizontalArrangement = Arrangement.spacedBy(6.dp, Alignment.End),
         verticalArrangement = Arrangement.spacedBy(6.dp),
       ) {
-        // Tap a picture, document or voice clip to open it full screen.
-        line.attachments.forEach { a ->
+        // Tap a picture or document to open it full screen.
+        chips.forEach { a ->
           Box(
             Modifier.clip(MaterialTheme.shapes.medium).clickable(onClickLabel = "Open ${a.name}") {
               onOpen(ViewItem(a.path, if (a.kind == Attachment.Kind.DOC) a.name else a.path.substringAfterLast('/'), a.name))
@@ -359,17 +374,138 @@ private fun UserBubble(line: ChatLine, onOpen: (ViewItem) -> Unit, onLongPress: 
         }
       }
     }
-    if (line.display.isNotBlank()) Surface(
+    if (line.display.isNotBlank() || said != null) Surface(
       color = extra.userBubble,
       contentColor = extra.onUserBubble,
       shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 6.dp),
       modifier = Modifier.widthIn(max = maxBubble).clip(RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp, bottomStart = 22.dp, bottomEnd = 6.dp))
         .combinedClickable(onClick = {}, onLongClick = onLongPress, onLongClickLabel = "Message actions"),
     ) {
-      Text(line.display, Modifier.padding(horizontal = 16.dp, vertical = 11.dp), style = MaterialTheme.typography.bodyLarge)
+      Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        // A spoken turn is the waveform first, with a chevron to show the words. The clip is what was
+        // said; the transcript is a reading of it, so reading it is a choice.
+        var open by rememberSaveable(line.id) { mutableStateOf(false) }
+        if (said != null) VoiceClipRow(said.path, onToggle = { open = !open }, open = open)
+        if (line.display.isNotBlank() && (said == null || open)) {
+          if (said != null) Text("Transcript", style = MaterialTheme.typography.labelSmall, color = extra.onUserBubble.copy(alpha = 0.65f))
+          Text(line.display, style = MaterialTheme.typography.bodyLarge)
+        } else if (said == null) {
+          Text("Voice message", style = MaterialTheme.typography.bodyLarge)
+        }
+      }
     }
   }
   }
+}
+
+/**
+ * A voice message as messenger draws it: a round play button, the waveform of the actual clip, and a
+ * chevron that shows or hides what it says. The waveform is computed from the WAV on the phone (no
+ * pretend bars): each bar is the loudest sample in its slice, so a silent start looks silent.
+ */
+@Composable
+private fun VoiceClipRow(path: String, onToggle: (() -> Unit)? = null, open: Boolean = true) {
+  val file = remember(path) { java.io.File(path) }
+  val player = remember(path) {
+    runCatching { android.media.MediaPlayer().apply { setDataSource(file.path); prepare() } }.getOrNull()
+  }
+  val wave = remember(path) { waveform(file) }
+  var playing by remember(path) { mutableStateOf(false) }
+  var pos by remember(path) { mutableFloatStateOf(0f) }
+  DisposableEffect(player) { onDispose { runCatching { player?.release() } } }
+  LaunchedEffect(playing, player) {
+    while (playing && player != null) {
+      pos = player.currentPosition.toFloat() / player.duration.coerceAtLeast(1)
+      if (!player.isPlaying) { playing = false; pos = 0f }
+      kotlinx.coroutines.delay(120)
+    }
+  }
+  val length = player?.let { "%.0f s".format(it.duration / 1000f) } ?: "clip"
+  Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+    androidx.compose.material3.FilledIconButton(
+      onClick = { player?.let { p -> if (p.isPlaying) p.pause() else p.start(); playing = p.isPlaying } },
+      enabled = player != null,
+      modifier = Modifier.size(34.dp),
+    ) {
+      Icon(
+        if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+        if (playing) "Pause the clip" else "Play the clip",
+        Modifier.size(18.dp),
+      )
+    }
+    Waveform(
+      bars = wave,
+      playedFraction = if (playing) pos else 0f,
+      modifier = Modifier.weight(1f),
+    )
+    Text(length, style = MaterialTheme.typography.labelSmall)
+    if (onToggle != null) {
+      IconButton(onClick = onToggle, modifier = Modifier.size(26.dp)) {
+        Icon(
+          if (open) Icons.Rounded.KeyboardArrowUp else Icons.Rounded.KeyboardArrowDown,
+          if (open) "Hide the transcript" else "Show the transcript",
+          Modifier.size(20.dp),
+        )
+      }
+    }
+  }
+}
+
+/** Bars drawn from the clip's samples, played bars tinted. */
+@Composable
+private fun Waveform(bars: List<Float>, playedFraction: Float, modifier: Modifier = Modifier) {
+  val done = com.offlinegemma.app.ui.LocalExtraColors.current
+  androidx.compose.foundation.Canvas(modifier.height(26.dp)) {
+    if (bars.isNotEmpty()) {
+      val gap = 1.5f
+      val w = (size.width - gap * (bars.size - 1).coerceAtLeast(0)) / bars.size
+      bars.forEachIndexed { i, amp ->
+        val h = (amp * size.height).coerceAtLeast(2f)
+        val x = i * (w + gap)
+        val colour = if (i < (bars.size * playedFraction).toInt()) done.onUserBubble else done.onUserBubble.copy(alpha = 0.45f)
+        drawRoundRect(
+          color = colour,
+          topLeft = androidx.compose.ui.geometry.Offset(x, (size.height - h) / 2),
+          size = androidx.compose.ui.geometry.Size(w, h),
+          cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 2),
+        )
+      }
+    }
+  }
+}
+
+/**
+ * Peak amplitude of slices of a 16-bit PCM WAV, normalised to 0..1. Silence stays at zero, so a clip
+ * that starts quiet draws flat at the start rather than a decorative uniform wave.
+ */
+private fun waveform(file: java.io.File, bars: Int = 34): List<Float> {
+  return runCatching {
+    val bytes = file.readBytes()
+    if (bytes.size < 44) return emptyList()
+    val channels = (bytes[22].toInt() and 0xFF) or (bytes[23].toInt() shl 8)
+    val rate = (bytes[24].toInt() and 0xFF) or (bytes[25].toInt() shl 8) or (bytes[26].toInt() shl 16)
+    val data = 44
+    val frameBytes = 2 * channels.coerceAtLeast(1)
+    val frames = (bytes.size - data) / frameBytes
+    if (frames <= 0 || rate <= 0) return emptyList()
+    val per = (frames / bars).coerceAtLeast(1)
+    (0 until bars).map { b ->
+      var peak = 0
+      var k = 0
+      while (k < per) {
+        val at = data + (b * per + k) * frameBytes
+        if (at + 1 < bytes.size) {
+          val s = ((bytes[at].toInt() and 0xFF) or (bytes[at + 1].toInt() shl 8)).toShort().toInt()
+          peak = maxOf(peak, kotlin.math.abs(s))
+        }
+        k++
+      }
+      peak / 32768f
+    }.let { raw ->
+      val top = raw.maxOrNull() ?: 0f
+      if (top <= 0f) raw else raw.map { (it / top).coerceIn(0f, 1f) }
+    }
+  }.getOrDefault(emptyList())
 }
 
 /** Long-press a message: Copy / Share / Read aloud / Regenerate, as a bottom sheet with big rows. */
@@ -416,7 +552,12 @@ private fun NoticeLine(text: String) {
 }
 
 @Composable
-private fun LoadError(message: String, onRetry: () -> Unit) {
+private fun LoadError(message: String, onRetry: () -> Unit, onChooseModel: () -> Unit) {
+  // No model on the phone, or one this phone cannot hold: "try again" can never fix that, so the only
+  // useful action is the model screen. Saying "the phone may be short on memory" for a missing file
+  // sent the user closing apps instead.
+  val missing = message.contains("not found", ignoreCase = true)
+  val tooLarge = message.contains("needs about", ignoreCase = true)
   Column(
     Modifier.fillMaxSize().padding(32.dp),
     horizontalAlignment = Alignment.CenterHorizontally,
@@ -425,13 +566,28 @@ private fun LoadError(message: String, onRetry: () -> Unit) {
     Text("Jonaki AI could not start", style = MaterialTheme.typography.headlineSmall)
     Spacer(Modifier.height(8.dp))
     Text(
-      "The phone may be short on memory. Close other apps and try again.\n\n($message)",
+      when {
+        missing -> "The AI model is not on this phone yet, so there is nothing to load."
+        tooLarge -> "This model is too large for this phone, so it cannot run safely here."
+        else -> "The model could not be loaded."
+      },
       style = MaterialTheme.typography.bodyMedium,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
       textAlign = TextAlign.Center,
     )
+    Spacer(Modifier.height(8.dp))
+    Text(
+      message,
+      style = MaterialTheme.typography.bodySmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+      textAlign = TextAlign.Center,
+    )
     Spacer(Modifier.height(20.dp))
-    androidx.compose.material3.Button(onClick = onRetry, Modifier.height(48.dp)) { Text("Try again") }
+    if (missing || tooLarge) {
+      androidx.compose.material3.Button(onClick = onChooseModel, Modifier.height(48.dp)) { Text("Choose a model") }
+    } else {
+      androidx.compose.material3.Button(onClick = onRetry, Modifier.height(48.dp)) { Text("Try again") }
+    }
   }
 }
 

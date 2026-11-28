@@ -24,10 +24,17 @@ your chats, photos and voice never leave it.
 ## First launch (about 5–10 minutes on Wi-Fi)
 
 1. Tap **Get started**.
-2. The app checks your storage and memory, then tap **Download (2.59 GB)**.
+2. The app checks your memory and storage and shows **only the models this phone can run** — with
+   how much memory each needs next to how much your phone has. Tap **Download**.
+   A model that is too big for the phone is never offered, because running one can make the whole
+   phone slow or unstable, not just this app.
 3. You can leave the app; the download keeps going and shows in your notifications.
    If Wi-Fi drops, it carries on by itself later. It never uses mobile data unless you switch off **Wi-Fi only**.
 4. When it's done, Gemma wakes up (about 20 seconds the first time) and you can chat.
+
+If a model was already installed by an older version, the download screen skips itself and you go
+straight to chatting. If that model turns out to be too large for the phone, the screen says so and
+offers to remove it.
 
 ## Things to try
 

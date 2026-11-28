@@ -72,7 +72,7 @@ class MainActivity : ComponentActivity() {
     // the Activity - not only from the chat screen - means coming back always wakes the model
     // instead of sitting on "Waking up" forever. loadModel() is safe to call repeatedly.
     val app = application as App
-    if (ModelInfo.isDownloaded(this, app.prefs.usableModel())) app.chat.loadModel()
+    if (ModelInfo.hasUsableModel(this)) app.chat.loadModel()
     // A study pack copied to the phone while the app was in the background gets indexed now,
     // without waiting for a restart. Unchanged packs do nothing.
     app.chat.refreshKnowledgeIfStale()
@@ -111,6 +111,7 @@ class MainActivity : ComponentActivity() {
     // Download a named model without tapping through Settings (the eval bench uses this).
     intent.getStringExtra("download_model")?.let { m ->
       val target = runCatching { ChatModel.valueOf(m.uppercase()) }.getOrDefault(ModelInfo.DEFAULT)
+      // The bench may install any model; whether it runs is the phone's call at load time.
       ModelDownloadWorker.start(this, app.prefs.wifiOnly, target.name)
     }
     // Switch the running model, e.g. -e use_model E4B, without touching Settings.
@@ -139,6 +140,9 @@ class MainActivity : ComponentActivity() {
     // Voice from a file instead of the microphone, so talk mode can be exercised without speaking:
     // `--es voice_clip /sdcard/clip.wav` (16 kHz mono WAV). Goes through the exact voice path.
     intent.getStringExtra("voice_clip")?.let { src ->
+      // `--es voice_said "text"` pretends the clip said exactly this, to isolate the transcriber:
+      // the same clip then exercises everything downstream of it with a known-good transcript.
+      ChatController.forcedSpeech = intent.getStringExtra("voice_said")
       lifecycleScope.launch {
         val dest = java.io.File(filesDir, "voice_test.wav")
         val ok = runCatching { java.io.File(src).copyTo(dest, overwrite = true) }.isSuccess
@@ -313,7 +317,7 @@ class MainActivity : ComponentActivity() {
       else -> return
     }
     intent.action = null
-    screenState.value = if (ModelInfo.isDownloaded(this, (application as App).prefs.usableModel())) Screen.CHAT else Screen.SETUP
+    screenState.value = if (ModelInfo.hasUsableModel(this)) Screen.CHAT else Screen.SETUP
   }
 
   /** Pictures shared from another app need photo access on Android 13+ before we can read them. */
@@ -354,10 +358,15 @@ class MainActivity : ComponentActivity() {
       }
       AppTheme(app.prefs.theme, app.prefs.dynamicColor) {
         Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
-          var screen by rememberSaveable { mutableStateOf(if (ModelInfo.isDownloaded(this, app.prefs.usableModel())) Screen.CHAT else Screen.SETUP) }
+          var screen by rememberSaveable { mutableStateOf(if (ModelInfo.hasUsableModel(this)) Screen.CHAT else Screen.SETUP) }
           // A test command asked for another screen.
           LaunchedEffect(screenState.value) { screenState.value?.let { screen = it; screenState.value = null } }
-          LaunchedEffect(screen) { if (screen == Screen.CHAT && !ModelInfo.isDownloaded(this@MainActivity, app.prefs.model)) screen = Screen.SETUP }
+          // The chat screen always needs a model this phone can run, so the load error can never fire
+          // for a file that is simply missing or too large. A tapped "answer ready" notice or a share
+          // is not a good reason to go to setup, though, so only the boot path is gated.
+          LaunchedEffect(screen) {
+            if (screen == Screen.CHAT && !ModelInfo.hasUsableModel(this@MainActivity)) screen = Screen.SETUP
+          }
           BackHandler(enabled = screen == Screen.SETTINGS || screen == Screen.ABOUT) {
             screen = if (screen == Screen.ABOUT) Screen.SETTINGS else Screen.CHAT
           }

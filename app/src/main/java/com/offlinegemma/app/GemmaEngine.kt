@@ -41,10 +41,10 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
   /**
    * How many tokens (word pieces) the model can hold. The larger model carries a smaller window:
    * its weights are ~1 GB bigger, and weights plus KV cache must fit in the same process. A phone
-   * below the recommended RAM halves the E2B window as before.
+   * below the recommended RAM halves the window.
    */
   val maxTokens: Int
-    get() = model.maxTokens.let { if (ModelInfo.totalRamBytes(context) >= ModelInfo.MIN_RAM_BYTES) it else it / 2 }
+    get() = model.maxTokens.let { if (ModelInfo.slow(context, model)) it / 2 else it }
 
   private var engine: Engine? = null
   private var conversation: Conversation? = null
@@ -70,6 +70,14 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
   private fun loadLocked(): String {
     engine?.let { return mode }
     require(modelFile.exists()) { "Model file not found at ${modelFile.path}" }
+    // No total-RAM refusal here. One 7.56 GB phone was made unusable by E4B and an identical 7.56 GB
+    // phone runs it steadily, so the phone's own memory behaviour at load time is the only honest
+    // judge. If it cannot be held, `initialize()` fails and the user gets a sentence, not a kill.
+    if (!ModelInfo.roomyEnough(context, model)) Log.i(
+      TAG,
+      "${model.label} is above this phone's comfortable memory (${formatBytes(ModelInfo.totalRamBytes(context))}); " +
+        "trying anyway, the phone decides",
+    )
     val cache = context.cacheDir.path
     // MTP speculative decoding: the model drafts several tokens per step and verifies them, which is
     // the biggest lever on decode speed. ADAPTIVE, not ON, so it turns itself off if this GPU turns
@@ -94,8 +102,12 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     // Phones under the recommended memory: the audio part plus an image answer did not fit (a 4 GB
     // phone was closed for LOW_MEMORY while answering about a photo). There, keep pictures and leave
     // audio out; voice still works through the phone's own speech recognition.
-    val lowRam = ModelInfo.totalRamBytes(context) < ModelInfo.MIN_RAM_BYTES
-    val tried = if (lowRam) {
+    //
+    // This must be about the *phone*, not about the model being big for it: keyed on the model's
+    // recommendation, E4B on a 7.5 GB phone silently lost audio ("GPU + image"), so talk mode would
+    // have stopped hearing anything. E4B on this moto loads perfectly well with audio.
+    val tightPhone = ModelInfo.totalRamBytes(context) < ModelInfo.DEFAULT.recommendedRamBytes
+    val tried = if (tightPhone) {
       listOf(
         "GPU + image" to EngineConfig(
           modelPath = modelFile.path, backend = Backend.GPU(), visionBackend = Backend.GPU(),
@@ -254,23 +266,39 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
   }
 
   /**
-   * One-off question in a throwaway conversation (used to summarise old messages).
+   * One-off question in a throwaway conversation (used to summarise old messages, or to ask what an
+   * audio clip said before searching the study files with it).
    * The open chat is closed first: the engine holds one conversation at a time.
    */
-  suspend fun oneShot(prompt: String, maxOutput: Int = 220, image: ByteArray? = null): String = lock.withLock {
+  suspend fun oneShot(
+    prompt: String,
+    maxOutput: Int = 220,
+    image: ByteArray? = null,
+    audio: ByteArray? = null,
+  ): String = lock.withLock {
     withContext(Dispatchers.IO) {
       val e = engine ?: return@withContext ""
       runCatching { conversation?.close() }
       conversation = null
+      val role = when {
+        audio != null -> "You write down what a short voice recording says, word for word."
+        image != null -> "You check pictures for a textbook."
+        else -> "You summarise conversations briefly."
+      }
       val temp = e.createConversation(
         ConversationConfig(
-          systemInstruction = Contents.of(if (image != null) "You check pictures for a textbook." else "You summarise conversations briefly."),
+          systemInstruction = Contents.of(role),
           samplerConfig = SAMPLER,
           maxOutputToken = maxOutput,
         ),
       )
       try {
-        if (image != null) temp.sendMessage(Contents.of(Content.ImageBytes(image), Content.Text(prompt))).toString()
+        val parts = buildList {
+          if (audio != null) add(Content.AudioBytes(audio))
+          if (image != null) add(Content.ImageBytes(image))
+          add(Content.Text(prompt))
+        }
+        if (parts.size > 1) temp.sendMessage(Contents.of(parts)).toString()
         else temp.sendMessage(prompt).toString()
       } finally {
         runCatching { temp.close() }

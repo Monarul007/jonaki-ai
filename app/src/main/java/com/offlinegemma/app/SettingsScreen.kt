@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Language
 import androidx.compose.material.icons.rounded.Memory
 import androidx.compose.material.icons.rounded.MenuBook
@@ -173,17 +174,25 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       Section("Model")
       InfoRow(Icons.Rounded.Memory, prefs.model.label, if (app.gemma.isLoaded) "Running on: ${app.gemma.mode}" else "Not loaded")
       // One row per model. Downloading another model never removes the one already here, and each
-      // can be deleted on its own, so trying the larger model cannot cost the working one.
+      // can be deleted on its own, so trying a larger model cannot cost the working one.
       for (m in ChatModel.entries) {
         val here = ModelInfo.isDownloaded(context, m)
+        // Advice, not permission: this phone may well run it (two identical phones disagree), so a
+        // big model is offered with a warning instead of being withheld.
+        val roomy = ModelInfo.roomyEnough(context, m)
         val running = prefs.model == m
         val note = when {
           here && running -> "Installed and running. ${m.speed}."
+          here && !roomy -> "Installed, ${formatBytes(m.SIZE_BYTES)}. Bigger than this phone is comfortable with (${formatBytes(ram)}) — if it struggles, use E2B."
           here -> "Installed, ${formatBytes(m.SIZE_BYTES)}. ${m.speed}. Tap to use it."
+          !roomy -> "Not installed · ${formatBytes(m.SIZE_BYTES)} · ${m.speed} · needs about ${formatBytes(m.minTotalRamBytes)}, this has ${formatBytes(ram)}"
           else -> "Not installed · ${formatBytes(m.SIZE_BYTES)} · ${m.speed}"
         }
         ActionRow(
-          icon = if (running) Icons.Rounded.CheckCircle else Icons.Rounded.Download,
+          icon = when {
+            running -> Icons.Rounded.CheckCircle
+            else -> Icons.Rounded.Download
+          },
           title = m.label + if (running) " — in use" else "",
           body = note,
           enabled = !chat.busy,
@@ -199,7 +208,8 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
           }
         }
       }
-      if (ram < ModelInfo.MIN_RAM_BYTES) {
+      val runningModel = prefs.usableModel()
+      if (ModelInfo.slow(context, runningModel)) {
         InfoRow(Icons.Rounded.Speed, "This phone is on the slow side", "${formatBytes(ram)} of memory. Answers come a few words a second, and long chats are summarised sooner.")
       }
 
@@ -214,7 +224,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
       ) { prefs.thinking = it; chat.onThinkingChanged() }
       SwitchRow(
         Icons.Rounded.Science, "Interactive demos",
-        "Live science demos with sliders in tutor answers." + if (ram < ModelInfo.MIN_RAM_BYTES) " Slow on this phone (a few minutes each)." else "",
+        "Live science demos with sliders in tutor answers." + if (ModelInfo.slow(context, prefs.usableModel())) " Slow on this phone (a few minutes each)." else "",
         prefs.demos,
       ) { prefs.demos = it }
 
@@ -322,8 +332,9 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
     )
   }
   if (confirmModel) {
-    val victim = prefs.model
-    val others = ChatModel.entries.filter { it != victim && ModelInfo.isDownloaded(context, it) }
+    val victim = prefs.usableModel()
+    // Only a model this phone can actually run is a valid fallback; a too-large file is not.
+    val others = ChatModel.entries.filter { it != victim && ModelInfo.isUsable(context, it) }
     AlertDialog(
       onDismissRequest = { confirmModel = false },
       title = { Text("Delete ${victim.label}?") },
@@ -341,7 +352,7 @@ fun SettingsScreen(app: App, onBack: () -> Unit, onAbout: () -> Unit, onModelDel
           confirmModel = false
           chat.unloadModel()
           ModelInfo.delete(context, victim)
-          // Fall through to a model that is still installed; otherwise go back to setup.
+          // Fall through to a model that is still usable; otherwise go back to setup.
           val next = others.firstOrNull()
           if (next != null) {
             prefs.model = next
