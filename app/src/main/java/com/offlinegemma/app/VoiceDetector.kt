@@ -13,8 +13,16 @@ import kotlin.math.sqrt
 class VoiceDetector(
   private val rate: Int = 16000,
   private val preFrames: Int = 11,
-  /** A natural pause must be long enough that the user has really finished the thought. */
-  private val endSilenceMs: Int = 2500,
+  /**
+   * How much quiet means "they finished the thought".
+   *
+   * This is the single biggest term in how long a spoken turn feels dead, because nothing at all
+   * happens until it elapses: it was 2500 ms, and 2.5 s of silence after every question reads as "it
+   * did not hear me". 900 ms is the usual end-of-turn window for conversational assistants (long
+   * enough for a natural pause between clauses, short enough not to feel broken), and the 0.35 s of
+   * pre-roll kept from before speech still protects the start of a word.
+   */
+  private val endSilenceMs: Int = 900,
   /** How far above the learned echo the user must be to interrupt (loudspeaker only). */
   var echoMargin: Double = 2.5,
   /** Talk mode turns this off: only an orb tap may interrupt a reply. */

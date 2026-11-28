@@ -243,11 +243,23 @@ class VoiceTest {
     val v = VoiceDetector()
     v.run(0.003, 20, 0, VoiceDetector.Mode.LISTENING)
     assertEquals(VoiceDetector.Event.Start, v.feed(frame(0.1), 1000, VoiceDetector.Mode.LISTENING))
-    v.run(0.1, 30, 1032, VoiceDetector.Mode.RECORDING)
-    val pause = v.run(0.002, 45, 2000, VoiceDetector.Mode.RECORDING) // 1.4 s pause
+    v.run(0.1, 30, 1032, VoiceDetector.Mode.RECORDING) // talk until 1960
+    // 608 ms of quiet: a breath between clauses, under the 900 ms end-of-turn window.
+    val pause = v.run(0.002, 19, 2000, VoiceDetector.Mode.RECORDING)
     assertFalse(pause.any { it is VoiceDetector.Event.Finish })
-    val rest = v.run(0.002, 40, 3440, VoiceDetector.Mode.RECORDING)
+    val rest = v.run(0.002, 40, 2624, VoiceDetector.Mode.RECORDING)
     assertTrue(rest.any { it is VoiceDetector.Event.Finish })
+  }
+
+  /** The wait after the last word is what the person feels; pin the two terms that make it up. */
+  @Test fun endOfTurnWindowIsShortEnoughToNotFeelBroken() {
+    val v = VoiceDetector()
+    v.run(0.003, 20, 0, VoiceDetector.Mode.LISTENING)
+    v.feed(frame(0.1), 1000, VoiceDetector.Mode.LISTENING)
+    v.run(0.1, 30, 1032, VoiceDetector.Mode.RECORDING) // last loud frame at 1960
+    // Exactly 1 s of quiet must be enough to submit.
+    val quiet = v.run(0.002, 32, 2000, VoiceDetector.Mode.RECORDING)
+    assertTrue("1 s of silence should end the turn", quiet.any { it is VoiceDetector.Event.Finish })
   }
 
   @Test fun coughIsIgnored() {

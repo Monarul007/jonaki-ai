@@ -509,6 +509,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // A supplied transcript, so a spoken turn can be compared with the same question typed.
     forcedSpeech?.let { return it }
     val clip = atts.firstOrNull { it.kind == Attachment.Kind.AUDIO } ?: return ""
+    // Acknowledge now: this is the first thing that runs once the clip has been submitted, so the
+    // acknowledgement follows the end-of-turn silence window (~0.9 s) and nothing else. It used to be
+    // fired far below, after the study-file embedder; measured, that put 1885 ms of search work in
+    // front of the only thing meant to cover the silence, and no threshold adjustment could fix it.
+    // Fired before ASR on purpose — the transcription does not need to finish to say "one moment".
+    onPreparing?.invoke(0L)
     // A real ASR model first. The chat model used to do this, and it Romanised Bengali — the words
     // that carry the question were lost, and the study-file search then matched the wrong passage.
     if (Speech.isInstalled(app)) {
@@ -768,10 +774,6 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // already exact, so a reasoning pass over it would only cost time.
         var planForCalc: String? = null
         val canSearch = !offline && prefs.webSearch && Tools.online(app)
-        // The long, silent part of a spoken turn starts here: plan, search, first token. Firing this
-        // from the answer job (not from the microphone) means the same path is exercised by the
-        // voice_clip test hook and by really speaking.
-        if (voice) onPreparing?.invoke(answerId)
         // A spoken turn's words are now the message itself, so it is planned exactly like a typed
         // one. The gate used to be `attachments.isEmpty()`, which no voice turn could ever satisfy
         // (it always carries its clip), so a spoken question was never planned, never searched, and

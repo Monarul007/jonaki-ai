@@ -59,7 +59,6 @@ class TalkController(private val context: Context, private val chat: ChatControl
   private var spokeEndAt = 0L
   /** True once the real answer has started speaking, so the holding line is not said over it. */
   @Volatile private var spokeAnswer = false
-  private var holdAt = 0L
 
   init {
     chat.onAnswerStart = { id, voice ->
@@ -77,21 +76,21 @@ class TalkController(private val context: Context, private val chat: ChatControl
         transcript = speakable(text).trim()
       }
     }
-    // Preparation (transcribe -> plan -> search -> first token) takes ~19 s on this phone before any
-    // answer text exists, and talk mode was silent for all of it. One short line acknowledges the
-    // question; the real answer flushes it as soon as it starts speaking.
+    // Preparation (transcribe -> plan -> search -> first token) takes seconds before any answer text
+    // exists, and talk mode was silent for all of it. Acknowledge as soon as the turn is submitted —
+    // do NOT delay this with postDelayed.
+    //
+    // Measured: a 2000 ms postDelayed was delivered at 3470 ms after the last word, because the main
+    // thread is busy with the model and a posted callback only runs when it next gets the looper. A
+    // delay here is therefore not a promise about wall-clock time. Firing immediately means the
+    // acknowledgement lands when it genuinely can — ~1.2 s after the last syllable (900 ms end-of-turn
+    // window + ASR) — and the real answer flushes it the moment it starts speaking.
     chat.onPreparing = { _ ->
       // `running` alone is the wrong test: while a spoken turn is being prepared, talk mode may still
       // be waking the audio part, so `waking` counts too. Outside a talk session nothing is said.
       if ((running || waking) && !spokeAnswer) {
-        holdAt = SystemClock.elapsedRealtime()
-        val wait = if (onHeadphones) "One moment." else "Let me check that."
-        main.postDelayed({
-          if ((running || waking) && st != State.SPEAKING && !spokeAnswer) {
-            Log.i(TAG, "Holding line after ${SystemClock.elapsedRealtime() - holdAt} ms of silence")
-            speaker.hold(wait)
-          }
-        }, HOLD_AFTER_MS)
+        Log.i(TAG, "Holding line ${SystemClock.elapsedRealtime() - spokeEndAt} ms after speech ended")
+        speaker.hold(if (onHeadphones) "One moment." else "Let me check that.")
       }
     }
     chat.onAnswerDone = { line ->
@@ -289,20 +288,6 @@ class TalkController(private val context: Context, private val chat: ChatControl
     const val RATE = 16000
     private const val FRAME = 512 // 32 ms
     private const val PRE_FRAMES = 11 // ~0.35 s kept from before speech starts
-
-    /**
-     * How long to wait before acknowledging out loud.
-     *
-     * This is an absolute wait, not a wait measured from "the person stopped talking": the clock
-     * starts when preparation begins, which is already ~0.5 s after the last syllable. So what the
-     * person experiences is this value plus that ~0.5 s — 2.5 s read as the 3.0 s they complained
-     * about ("reduce 2.65 s wait").
-     *
-     * 1.8 s puts it back at ~2.3 s: still long enough that a fast answer is not talked over, short
-     * enough that the silence stops feeling like a stall. Do not raise this back without re-measuring
-     * from the *end of speech*, which is what the person is actually timing.
-     */
-    private const val HOLD_AFTER_MS = 1800L
 
     /** 16 kHz mono 16-bit WAV (LiteRT-LM reads WAV directly). */
     fun encodeWav(chunks: List<ShortArray>): ByteArray {
