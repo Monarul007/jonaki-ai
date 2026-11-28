@@ -334,4 +334,33 @@ object Markdown {
 
   /** Plain text of a reply for "Copy": no NEXT line. */
   fun plain(src: String) = Tutor.stripNext(src).trim()
+
+  /**
+   * Readable text for a passage that is prose with inline maths, not a full markdown document.
+   *
+   * Used for the explanation panel. The model writes worked steps as inline LaTeX — "$500 \\times
+   * (1 + 0.2)$" — and the panel shows raw text, so the reader saw dollar signs and backslashes instead
+   * of "500 × (1 + 0.2)". Each $…$ span goes through [tex]; everything outside it is left alone, so
+   * ordinary prose is not mangled.
+   */
+  fun inline(src: String): String {
+    val out = StringBuilder(src.length)
+    var i = 0
+    while (i < src.length) {
+      if (src[i] == '$') {
+        // $$…$$ and $…$ both occur; take the matching closer and convert what is between them.
+        val fence = if (i + 1 < src.length && src[i + 1] == '$') "$$" else "$"
+        val start = i + fence.length
+        val end = src.indexOf(fence, start)
+        if (end > start) {
+          out.append(tex(src.substring(start, end).trim()))
+          i = end + fence.length
+          continue
+        }
+      }
+      out.append(src[i])
+      i++
+    }
+    return out.toString().trim()
+  }
 }

@@ -2138,7 +2138,24 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       .lastOrNull { it.who == Who.USER }?.display).orEmpty()
     if (question.isBlank() || line.text.isBlank()) return
     val bengali = prefs.answerBengali || line.text.any { it in '\u0980'..'\u09FF' }
+    // A maths answer needs different teaching from a factual one.
+    //
+    // The generic prompt asks for "the rule, in one sentence", which is exactly wrong here: what makes
+    // a sum understandable is the WORKING — which numbers, which operation, why that operation — and a
+    // single sentence cannot carry it. The model used to volunteer a derivation; that was removed so
+    // answers stay short, so this is where the derivation belongs now: on request.
+    val calc = line.tools.firstOrNull { it.name == "calculate" && it.ok == true }
+    val isMaths = calc != null || Tutor.looksNumeric(question, null)
     val evidence = buildString {
+      // The calculator's own result is the ground truth for the arithmetic. Giving it to the model
+      // means the explanation must arrive at the number already verified, instead of inventing a
+      // second, possibly different, chain that "proves" it.
+      calc?.let { c ->
+        append("\nThe phone performed this calculation:\n")
+        append("  expression: ${c.detail}\n")
+        append("  result:     ${c.result}\n")
+        append("  the answer must agree with this exactly.\n")
+      }
       if (line.tools.any { it.name == "knowledge" }) {
         append("\nStudy-file passages were used for this answer:\n")
         line.tools.filter { it.name == "knowledge" }.take(2).forEach { append(it.result.take(700)).append("\n") }
@@ -2163,22 +2180,38 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           append("My question: ${question.take(300)}\n\n")
           append("My answer: ${line.text.take(700)}\n")
           if (evidence.isNotBlank()) append(evidence)
-          append("\nExplain this answer to me. Use exactly this shape, nothing else:\n")
-          append("ANSWER: why the answer is correct, in one sentence.\n")
-          append("REASON: the step or rule that makes it correct, in one sentence.\n")
-          append("CONCEPT: the idea behind it, in one or two sentences a beginner could follow.\n")
-          if (bengali) append("Write in Bengali, in simple words.\n")
-          append("Only use reasons the passages above support. If you cannot explain it simply and ")
-          append("correctly, reply with this one line instead: CANNOT_EXPLAIN")
+          if (isMaths) {
+            // Maths: show the working, not a summary of it. The point of asking is to see HOW the
+            // number was reached, so each step carries its own numbers and the operation it used.
+            append("\nExplain how this answer was worked out. Follow this shape exactly:\n")
+            append("STEPS: the working, as numbered lines. One operation per line, with the actual ")
+            append("numbers in it, ending with the final value. Use the calculator's expression and ")
+            append("result above as given — do not re-derive a different number.\n")
+            append("WHY: in one sentence, why that operation is the right one for this question.\n")
+            append("CONCEPT: the idea being tested, in one or two sentences a beginner could follow.\n")
+            append("Every line must follow from the line above it. If you cannot show working that ")
+            append("actually reaches the answer, reply with this one line instead: CANNOT_EXPLAIN")
+          } else {
+            append("\nExplain this answer to me. Use exactly this shape, nothing else:\n")
+            append("ANSWER: why the answer is correct, in one sentence.\n")
+            append("REASON: the step or rule that makes it correct, in one sentence.\n")
+            append("CONCEPT: the idea behind it, in one or two sentences a beginner could follow.\n")
+            append("Only use reasons the passages above support. If you cannot explain it simply and ")
+            append("correctly, reply with this one line instead: CANNOT_EXPLAIN")
+          }
+          if (bengali) append("\nWrite in Bengali, in simple words.")
         }
-        val out = runCatching { gemma.oneShot(ask, 320) }.getOrDefault("")
+        // A worked derivation is several lines, so it needs more room than a three-line explanation.
+        val out = runCatching { gemma.oneShot(ask, if (isMaths) 500 else 320) }.getOrDefault("")
         // oneShot closes the conversation; restore it or the next answer runs on a closed one.
         runCatching { gemma.startChat(history(lines)) }
         val cleaned = out.trim()
+        // Inline LaTeX ($500 \times 1.2$) is converted for the panel, which renders plain text —
+        // otherwise a worked derivation reads as dollar signs and backslashes.
         text = if (cleaned.isBlank() || cleaned.contains("CANNOT_EXPLAIN", ignoreCase = true)) {
           if (bengali) "দুঃখিত, আমি এই উত্তরটি সহজভাবে ব্যাখ্যা করতে পারছি না।"
           else "Sorry — I can't explain this answer simply and correctly."
-        } else cleaned
+        } else Markdown.inline(cleaned)
         update(answerId, shown) { it.copy(explain = text) }
         save(shown)
         Log.i("ChatController", "explained answer $answerId: ${if (text.startsWith("দুঃখিত") || text.startsWith("Sorry")) "declined" else "${text.length} chars"}")

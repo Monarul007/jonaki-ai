@@ -159,9 +159,16 @@ fun Answer(
         // Explain: why this answer is right and the idea behind it. On demand, because it is a whole
         // model round-trip and most answers do not need one. Once asked, the text is kept on the line
         // and simply shown, so tapping again costs nothing.
+        // A maths answer gets working, not commentary, so the label says what you will actually get.
+        val maths = line.tools.any { it.name == "calculate" && it.ok == true } ||
+          Tutor.looksNumeric(line.topic ?: line.display, null)
         SmallAction(
           Icons.Rounded.Lightbulb,
-          if (line.explain.isBlank()) "Explain this answer" else "Explanation shown below",
+          when {
+            line.explain.isNotBlank() -> "Explanation shown below"
+            maths -> "Show how this was worked out"
+            else -> "Explain this answer"
+          },
           enabled = line.explain.isNotBlank() || (canAct && chat != null),
         ) { chat?.explain(line.id) }
         // Rating: the only record of which answers were actually wrong, so they can be reviewed later.
@@ -314,6 +321,9 @@ private fun Shimmer(label: String = "Thinking…") {
  */
 @Composable
 private fun ExplainPanel(text: String) {
+  // A maths explanation is a worked derivation ("STEPS:"), so its heading says so. Labelling it
+  // "Why this answer" made a page of working look like commentary.
+  val isWorking = Regex("(?m)^\\s*STEPS\\s*:").containsMatchIn(text)
   Surface(
     color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
     shape = RoundedCornerShape(12.dp),
@@ -324,7 +334,7 @@ private fun ExplainPanel(text: String) {
         Icon(Icons.Rounded.Lightbulb, null, Modifier.size(15.dp), tint = Brand.Teal)
         Spacer(Modifier.width(6.dp))
         Text(
-          "Why this answer",
+          if (isWorking) "How it was worked out" else "Why this answer",
           style = MaterialTheme.typography.labelMedium,
           color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
