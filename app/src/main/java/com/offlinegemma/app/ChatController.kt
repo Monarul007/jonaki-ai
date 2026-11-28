@@ -757,6 +757,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // already exact, so a reasoning pass over it would only cost time.
         var planForCalc: String? = null
         val canSearch = !offline && prefs.webSearch && Tools.online(app)
+        // The long, silent part of a spoken turn starts here: plan, search, first token. Firing this
+        // from the answer job (not from the microphone) means the same path is exercised by the
+        // voice_clip test hook and by really speaking.
+        if (voice) onPreparing?.invoke(answerId)
         // A spoken turn's words are now the message itself, so it is planned exactly like a typed
         // one. The gate used to be `attachments.isEmpty()`, which no voice turn could ever satisfy
         // (it always carries its clip), so a spoken question was never planned, never searched, and
@@ -772,7 +776,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             Log.i("ChatController", "plan skipped (nothing to decide): choices=$choices numeric=$numericQ")
             ""
           } else {
-          val plan = planAnswer(topic, canSearch)
+          val plan = planAnswer(topic, canSearch, spoken = voice)
           choices = plan.choices
           planForCalc = plan.calc
           // Record the decision itself: it is the step a reader most wants to see ("why did it
@@ -1562,7 +1566,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
    * a greeting or a poem) and, when the answer needs a sum, a JavaScript expression for it. The
    * model decides both; the app only reads the two labelled lines it asked for.
    */
-  private suspend fun planAnswer(question: String, canSearch: Boolean): AnswerPlan {
+  private suspend fun planAnswer(question: String, canSearch: Boolean, spoken: Boolean = false): AnswerPlan {
     status = "Planning the answer…"
     val before = work.lines.dropLast(2)
     // The last exchange, so a follow-up ("and his wife?") becomes a query that stands on its own.
@@ -1584,13 +1588,20 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       }
       // Only a sum my message already spells out: for a word problem the model wrote a wrong
       // set-up ((30*5)/6 for an age puzzle) and the exact-looking result made the answer worse.
-      append("CALC: only if my message itself states a plain calculation whose numbers and operations ")
-      append("are all given (a percentage, a unit conversion, an arithmetic expression), that sum as one ")
-      append("JavaScript expression: numbers, + - * / ( ) and Math functions only; no words, no units, no = ")
-      append("sign, not the result. For a word problem that has to be set up first (unknown ages, shares, ")
-      append("work and time, equations), and for everything else, NONE.\n")
-      append("CHOICES: YES if my message gives answer options to choose from (such as (a)…(d) or (ক)…(ঘ)), else NO.\n")
-      append("Example of the format:\nSEARCH: NONE\nCALC: (3.5 * 12) / 4\nCHOICES: NO")
+      // A spoken question rarely states a sum and never offers answer options, so those two lines are
+      // not asked in voice: this is a time saving, not a capability cut. SEARCH is always asked,
+      // because that is the whole reason a spoken turn is planned at all.
+      if (!spoken) {
+        append("CALC: only if my message itself states a plain calculation whose numbers and operations ")
+        append("are all given (a percentage, a unit conversion, an arithmetic expression), that sum as one ")
+        append("JavaScript expression: numbers, + - * / ( ) and Math functions only; no words, no units, no = ")
+        append("sign, not the result. For a word problem that has to be set up first (unknown ages, shares, ")
+        append("work and time, equations), and for everything else, NONE.\n")
+        append("CHOICES: YES if my message gives answer options to choose from (such as (a)…(d) or (ক)…(ঘ)), else NO.\n")
+        append("Example of the format:\nSEARCH: NONE\nCALC: (3.5 * 12) / 4\nCHOICES: NO")
+      } else {
+        append("Example of the format:\nSEARCH: NONE")
+      }
     }
     val startedAt = System.currentTimeMillis()
     val raw = runCatching { gemma.oneShot(ask, 90) }.getOrDefault("")
@@ -1776,6 +1787,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
   /** Talk mode and read-aloud listen to answers as they stream. */
   var onAnswerStart: ((Long, Boolean) -> Unit)? = null
   var onAnswerText: ((Long, String) -> Unit)? = null
+  /**
+   * Called when a spoken answer is about to be prepared (transcribe, plan, search — ~19 s before the
+   * first word). Talk mode says one short line so the wait is not silence.
+   */
+  var onPreparing: ((Long) -> Unit)? = null
   var onAnswerDone: ((ChatLine) -> Unit)? = null
 
   private fun readBytes(a: Attachment) = runCatching { java.io.File(a.path).readBytes() }.getOrNull()

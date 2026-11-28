@@ -163,6 +163,20 @@ class Speaker(context: Context, private val prefs: Prefs) {
     if (chunk.isNotEmpty()) say(chunk)
   }
 
+  /**
+   * Say something while the real answer is still being prepared.
+   *
+   * Planning and searching a question takes ~11 s before the first token exists, and talk mode sat
+   * silent for all of it. A short holding line turns that silence into an acknowledgement. It is not
+   * a reply: it is spoken as a separate utterance and the real answer speaks over it when it starts,
+   * so it never delays anything and is never mistaken for an answer.
+   */
+  fun hold(text: String) {
+    if (!ready || ended) return
+    tts.setSpeechRate(prefs.speechRate)
+    tts.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), "hold${counter++}")
+  }
+
   private var current: Voice? = null
   /** When the first piece of a reply was handed over (to measure how fast speech starts). */
   @Volatile private var firstAt = 0L

@@ -143,12 +143,23 @@ class MainActivity : ComponentActivity() {
       // `--es voice_said "text"` pretends the clip said exactly this, to isolate the transcriber:
       // the same clip then exercises everything downstream of it with a known-good transcript.
       ChatController.forcedSpeech = intent.getStringExtra("voice_said")
+      // `--ez via_talk true` runs the clip through talk mode instead of calling the chat directly, so
+      // the parts that only exist during a real session (the holding line) can be exercised too.
+      val viaTalk = intent.getBooleanExtra("via_talk", false)
       lifecycleScope.launch {
         val dest = java.io.File(filesDir, "voice_test.wav")
         val ok = runCatching { java.io.File(src).copyTo(dest, overwrite = true) }.isSuccess
         if (!ok) { android.util.Log.w("Talk", "voice_clip unreadable: $src"); return@launch }
         android.util.Log.i("Talk", "voice_clip ready: ${dest.length()} bytes")
         while (!app.chat.canSend()) kotlinx.coroutines.delay(500)
+        if (viaTalk) {
+          // Real talk session: the same path a spoken turn takes, so gated behaviour (the holding
+          // line) is exercised instead of being bypassed.
+          if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+          ) micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+          startTalk()
+        }
         app.chat.sendTyped(
           "", voice = true,
           extra = listOf(Attachment(Attachment.Kind.AUDIO, "Voice message", dest.path)),

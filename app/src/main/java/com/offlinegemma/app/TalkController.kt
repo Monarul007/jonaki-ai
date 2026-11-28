@@ -57,19 +57,41 @@ class TalkController(private val context: Context, private val chat: ChatControl
 
   // Timing, to compare with the PC (full loop ~15 s, interruption ~1 s).
   private var spokeEndAt = 0L
+  /** True once the real answer has started speaking, so the holding line is not said over it. */
+  @Volatile private var spokeAnswer = false
+  private var holdAt = 0L
 
   init {
     chat.onAnswerStart = { id, voice ->
       if (running && voice) {
         answerId = id
         transcript = ""
+        spokeAnswer = false
         speaker.start(id)
       }
     }
     chat.onAnswerText = { id, text ->
       if (running && id == answerId) {
+        spokeAnswer = true
         speaker.feed(text)
         transcript = speakable(text).trim()
+      }
+    }
+    // Preparation (transcribe -> plan -> search -> first token) takes ~19 s on this phone before any
+    // answer text exists, and talk mode was silent for all of it. One short line acknowledges the
+    // question; the real answer flushes it as soon as it starts speaking.
+    chat.onPreparing = { _ ->
+      // `running` alone is the wrong test: while a spoken turn is being prepared, talk mode may still
+      // be waking the audio part, so `waking` counts too. Outside a talk session nothing is said.
+      if ((running || waking) && !spokeAnswer) {
+        holdAt = SystemClock.elapsedRealtime()
+        val wait = if (onHeadphones) "One moment." else "Let me check that."
+        main.postDelayed({
+          if ((running || waking) && st != State.SPEAKING && !spokeAnswer) {
+            Log.i(TAG, "Holding line after ${SystemClock.elapsedRealtime() - holdAt} ms of silence")
+            speaker.hold(wait)
+          }
+        }, HOLD_AFTER_MS)
       }
     }
     chat.onAnswerDone = { line ->
@@ -267,6 +289,13 @@ class TalkController(private val context: Context, private val chat: ChatControl
     const val RATE = 16000
     private const val FRAME = 512 // 32 ms
     private const val PRE_FRAMES = 11 // ~0.35 s kept from before speech starts
+
+    /**
+     * How long to wait before acknowledging out loud. Below this the answer arrives on its own and a
+     * holding line would just talk over it; the measured no-search path is ~10 s, so this fires on
+     * anything that is actually going to make the person wait.
+     */
+    private const val HOLD_AFTER_MS = 2500L
 
     /** 16 kHz mono 16-bit WAV (LiteRT-LM reads WAV directly). */
     fun encodeWav(chunks: List<ShortArray>): ByteArray {
