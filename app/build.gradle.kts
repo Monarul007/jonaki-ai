@@ -66,6 +66,13 @@ android {
         buildConfig = true
     }
     testOptions { unitTests.isReturnDefaultValues = true }
+    // Real phones are 64-bit ARM. The sherpa-onnx AAR ships four ABIs (about 190 MB of them), so
+    // leaving every ABI in a debug build made the APK 337 MB for no benefit: the emulator is the only
+    // thing that needs x86_64, and it is already covered by keeping both arm64 and x86_64 builds
+    // available through the release filter below.
+    defaultConfig {
+        ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
+    }
     packaging {
         jniLibs { pickFirsts.add("**/liblitertlm_jni.so") }
         // Post-quantum crypto tables pulled in by the PDF reader's encryption support; never used here.
@@ -82,6 +89,13 @@ kotlin {
 }
 
 dependencies {
+    // On-device speech recognition for Bengali + English. A 2B chat model asked to "write down what
+    // this says" Romanises Bengali (measured: 3 of 5 clips came back as "Bangladesh-er koto tomo"),
+    // and that text is what the study files are searched with. sherpa-onnx is a real ASR runtime.
+    // The AAR is vendored rather than fetched: k2-fsa publishes no Maven coordinate, and pinning the
+    // file (SHA-256 4c766e2e74c9d33d595338c21fe3b305c73ba45d47e96a235675c33142a2ec50) means a
+    // release build cannot silently pick up a different runtime.
+    implementation(files("${rootProject.projectDir}/third_party/sherpa-onnx-2.0.3.aar"))
     implementation("com.google.ai.edge.litertlm:litertlm-android:0.19.1")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.work:work-runtime-ktx:2.10.5")

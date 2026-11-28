@@ -509,6 +509,17 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // A supplied transcript, so a spoken turn can be compared with the same question typed.
     forcedSpeech?.let { return it }
     val clip = atts.firstOrNull { it.kind == Attachment.Kind.AUDIO } ?: return ""
+    // A real ASR model first. The chat model used to do this, and it Romanised Bengali — the words
+    // that carry the question were lost, and the study-file search then matched the wrong passage.
+    if (Speech.isInstalled(app)) {
+      val wav = runCatching { java.io.File(clip.path).readBytes() }.getOrNull()
+      val heard = wav?.let { Speech.transcribe(app, it) }.orEmpty()
+      if (heard.length >= 2) {
+        Log.i("ChatController", "voice clip says (asr): '${heard.take(120)}'")
+        return heard.take(200)
+      }
+      Log.i("ChatController", "asr heard nothing usable; falling back to the chat model")
+    }
     val bytes = readBytes(clip) ?: return ""
     val said = runCatching {
       kotlinx.coroutines.runBlocking {
@@ -519,7 +530,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     kotlinx.coroutines.runBlocking {
       gemma.startChat(history(shown.lines.dropLast(0)).dropLast(0))
     }
-    Log.i("ChatController", "voice clip says: '${said.take(120)}'")
+    Log.i("ChatController", "voice clip says (gemma): '${said.take(120)}'")
     return said.takeIf { it.length in 2..200 && !it.equals("nothing", ignoreCase = true) } ?: ""
   }
 
@@ -766,6 +777,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // (it always carries its clip), so a spoken question was never planned, never searched, and
         // was answered from a model trained before the answer changed.
         val blocksPlan = attachments.any { it.kind != Attachment.Kind.AUDIO }
+        // The planner stays for spoken turns too. Skipping it was measured and made the answer
+        // *slower*: prep fell 18.6 s -> 4.1 s, but E4B then took rounds=3 and 44.2 s without ever
+        // calling the search tool, and the total went from 43.8 s to 48.3 s. A 2B model has the tool
+        // and does not reach for it, so one forced search is worth its 11.8 s until that changes.
         val webBlock = if (topic != null && !blocksPlan && links.isEmpty() && !testCode) {
           if (Rules.skipPlanner(topic, canSearch)) {
             // The message already settles what the planner would have been asked for, so its

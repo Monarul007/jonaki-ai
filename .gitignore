@@ -16,6 +16,12 @@ offlinegemma.properties
 shots-*.png
 dist/
 
+# The ASR runtime is vendored (50 MB, pinned by SHA-256 in app/build.gradle.kts), not committed.
+third_party/*.aar
+# The Bengali ASR model (94 MB) is downloaded by the developer, like the 2.6 GB chat model.
+third_party/sherpa-bn/
+*.onnx
+
 # Test bench outputs (answers, timings) stay local
 evals/results/
 
