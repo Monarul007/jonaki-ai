@@ -2140,9 +2140,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       notice("⏳ Just a moment — still finishing the last one.")
       return
     }
-    val question = (line.topic ?: lines.subList(0, i.coerceAtLeast(0))
-      .lastOrNull { it.who == Who.USER }?.display).orEmpty()
-    if (question.isBlank() || line.text.isBlank()) return
+    val question = Explanations.questionFor(lines, i)
+    // No question means nothing to explain AGAINST — the model would justify the answer with whatever
+    // fact sits nearest the topic, which is exactly the failure this guards.
+    if (question.isBlank()) {
+      notice("✋ I don't have the question for this answer, so I can't explain it.")
+      return
+    }
+    if (line.text.isBlank()) return
     val bengali = prefs.answerBengali || line.text.any { it in '\u0980'..'\u09FF' }
     // A maths answer needs different teaching from a factual one.
     //
@@ -2185,31 +2190,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
       // that is set must be cleared on every exit path — that is the rule this broke.
       var text = ""
       try {
-        val ask = buildString {
-          append("My question: ${question.take(300)}\n\n")
-          append("My answer: ${line.text.take(700)}\n")
-          if (evidence.isNotBlank()) append(evidence)
-          if (isMaths) {
-            // Maths: show the working, not a summary of it. The point of asking is to see HOW the
-            // number was reached, so each step carries its own numbers and the operation it used.
-            append("\nExplain how this answer was worked out. Follow this shape exactly:\n")
-            append("STEPS: the working, as numbered lines. One operation per line, with the actual ")
-            append("numbers in it, ending with the final value. Use the calculator's expression and ")
-            append("result above as given — do not re-derive a different number.\n")
-            append("WHY: in one sentence, why that operation is the right one for this question.\n")
-            append("CONCEPT: the idea being tested, in one or two sentences a beginner could follow.\n")
-            append("Every line must follow from the line above it. If you cannot show working that ")
-            append("actually reaches the answer, reply with this one line instead: CANNOT_EXPLAIN")
-          } else {
-            append("\nExplain this answer to me. Use exactly this shape, nothing else:\n")
-            append("ANSWER: why the answer is correct, in one sentence.\n")
-            append("REASON: the step or rule that makes it correct, in one sentence.\n")
-            append("CONCEPT: the idea behind it, in one or two sentences a beginner could follow.\n")
-            append("Only use reasons the passages above support. If you cannot explain it simply and ")
-            append("correctly, reply with this one line instead: CANNOT_EXPLAIN")
-          }
-          if (bengali) append("\nWrite in Bengali, in simple words.")
-        }
+        val ask = Explanations.prompt(question, line.text, evidence, isMaths, bengali)
         // A worked derivation is several lines, so it needs more room than a three-line explanation.
         val out = runCatching { gemma.oneShot(ask, if (isMaths) 500 else 320) }.getOrDefault("")
         // oneShot closes the conversation; restore it or the next answer runs on a closed one.
@@ -2217,7 +2198,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val cleaned = out.trim()
         // Inline LaTeX ($500 \times 1.2$) is converted for the panel, which renders plain text —
         // otherwise a worked derivation reads as dollar signs and backslashes.
-        text = if (cleaned.isBlank() || cleaned.contains("CANNOT_EXPLAIN", ignoreCase = true)) {
+        val declined = cleaned.isBlank() || cleaned.contains("CANNOT_EXPLAIN", ignoreCase = true)
+        // An explanation that wanders onto a different fact is worse than none: it reads authoritative
+        // and does not justify the answer. Measured case: a definition of photosynthesis justified by
+        // "red light is the most effective", which is true and irrelevant. The instruction to stay on
+        // topic did not prevent it, so a deterministic check does.
+        val wandered = !isMaths && !declined && !Explanations.reasonStaysOnTopic(line.text, cleaned)
+        if (wandered) Log.i("ChatController", "explanation rejected: reason drifts from the answer")
+        text = if (declined || wandered) {
           if (bengali) "দুঃখিত, আমি এই উত্তরটি সহজভাবে ব্যাখ্যা করতে পারছি না।"
           else "Sorry — I can't explain this answer simply and correctly."
         } else Markdown.inline(cleaned)
