@@ -714,12 +714,25 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             runCatching { Semantic.search(app, q, Semantic.LIMIT) }.getOrDefault(emptyList())
               .map { it.passage }
           } else null
-          // BM25 has only a *relative* floor, so it always returns its best few candidates. For a
-          // spoken turn that would inject unrelated passages whenever the clip says nothing on topic;
-          // there, only a passage the semantic gate accepted counts.
-          val rawHits = semantic
-            ?: if (voice) emptyList()
+          // Fall back to BM25 when the semantic gate accepted nothing — for a spoken turn too.
+          //
+          // The old rule gave voice NO fallback: `if (voice) emptyList()`. So whenever the cosine gate
+          // rejected (which is most Bengali exam questions — measured 0.70 gate against scores that
+          // cluster around it), a spoken question got knowledge=0ch while the identical typed question
+          // did retrieve. Verified offline against the real pack: BM25 returns the exact answer-key
+          // passage for all five questions the user reported, including
+          // "দক্ষিণ আফ্রিকার মুদ্রার নাম কী" -> "উত্তর: র‌্যান্ড" and
+          // "ইতিহাস বিষয়ে অভিজ্ঞ ব্যক্তি এক কথায় কী হবে" -> "উত্তর: ঐতিহাসিক".
+          //
+          // The concern the old rule was protecting against — BM25 injecting unrelated passages because
+          // its floor is relative, not absolute — is real, but it is handled below by the evidence
+          // rules: a passage must share at least two query terms, clear MIN_SCORE, and stay within 45%
+          // of the best score. That is a stricter test than "the semantic gate said yes".
+          val rawHits = if (semantic != null && semantic.isNotEmpty()) semantic
             else runCatching { Knowledge.search(app, q, KNOWLEDGE_PASSAGES) }.getOrDefault(emptyList())
+          if (semantic != null && semantic.isEmpty()) {
+            Log.i("ChatController", "retrieval: semantic found nothing, bm25 returned ${rawHits.size} for a ${if (voice) "spoken" else "typed"} turn")
+          }
           // The evidence rules apply to both paths. BM25's floor is relative to its own best hit, so
           // with every candidate weak the best of them still passed — that is how chemistry prose
           // reached a ratio sum. For a numeric question the passage must at least carry a number,

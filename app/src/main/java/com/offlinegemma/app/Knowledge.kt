@@ -173,6 +173,8 @@ object Knowledge {
     val b = 0.75
     val scores = HashMap<Int, Double>()
     val matched = HashMap<Int, Int>()
+    /** Rare terms matched, summed. A passage matching "আফ্রিকার" beats one matching "নাম". */
+    val rarity = HashMap<Int, Double>()
     for (term in terms) {
       val plist = p.postings[term] ?: continue
       val idf = ln(1.0 + (n - plist.size + 0.5) / (plist.size + 0.5))
@@ -181,6 +183,7 @@ object Knowledge {
         val denom = tf + k1 * (1 - b + b * len / p.avgLength)
         scores[doc] = (scores[doc] ?: 0.0) + idf * (tf * (k1 + 1)) / denom
         matched[doc] = (matched[doc] ?: 0) + 1
+        rarity[doc] = (rarity[doc] ?: 0.0) + idf
       }
     }
     if (scores.isEmpty()) return emptyList()
@@ -189,13 +192,40 @@ object Knowledge {
     // common is a coincidence ("Capital of Australia" matched a passage about capital letters).
     val need = if (terms.size >= 2) 2 else 1
     val best = scores.values.max()
-    return scores.entries
-      .filter { (matched[it.key] ?: 0) >= need }
-      .filter { it.value >= MIN_SCORE && it.value >= best * 0.45 }
-      .sortedByDescending { it.value }
-      .take(limit)
-      .map { p.passages[it.key] }
+    // Rank by how much RARE vocabulary the passage shares, then by BM25.
+    //
+    // Measured on the real pack, "দক্ষিণ আফ্রিকার মুদ্রার নাম কী" ranked a passage about দক্ষিণ কোরিয়া
+    // first (16.63) above the correct one (11.42): both share দক্ষিণ / মুদ্রার / নাম, so counting
+    // matched terms ties them, and the Korean passage is shorter so BM25 rewards its density. The term
+    // that actually distinguishes the question is "আফ্রিকার", which has a high idf and appears in only
+    // the correct passage. Ordering by summed idf puts it first; verified against the real pack, where
+    // the correct answer-key passage "…উত্তর: র‌্যান্ড" moves to rank 1 and Korea to rank 2.
+    return order(scores, matched, rarity, need, best, limit).map { p.passages[it] }
   }
+
+  /**
+   * Which candidate passages to keep, and in what order. Pure, so the rule can be tested against a
+   * real score distribution instead of asserted by eye.
+   *
+   * [scores] = BM25 per passage, [matched] = how many query terms it shares, [rarity] = summed idf of
+   * those terms, [need] = minimum shared terms, [best] = the highest score seen.
+   */
+  internal fun order(
+    scores: Map<Int, Double>,
+    matched: Map<Int, Int>,
+    rarity: Map<Int, Double>,
+    need: Int,
+    best: Double,
+    limit: Int,
+  ): List<Int> = scores.entries
+    .filter { (matched[it.key] ?: 0) >= need }
+    .filter { it.value >= MIN_SCORE && it.value >= best * 0.45 }
+    .sortedWith(
+      compareByDescending<Map.Entry<Int, Double>> { rarity[it.key] ?: 0.0 }
+        .thenByDescending { it.value },
+    )
+    .take(limit)
+    .map { it.key }
 
   /** Below this the "match" is noise, and adding it to the prompt makes answers worse. */
   private const val MIN_SCORE = 2.0
