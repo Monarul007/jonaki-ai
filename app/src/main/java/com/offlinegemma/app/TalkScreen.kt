@@ -266,35 +266,6 @@ private fun ReplyCard(talk: TalkController, modifier: Modifier) {
           )
         }
       }
-      // Rate what was just said. Voice replies are the likeliest to be wrong (the question came in
-      // through ASR), and this is the only way to mark one — the same verdict the chat screen stores.
-      talk.answerLine?.let { line ->
-        if (line.rating != null || talk.state != TalkController.State.THINKING) {
-          Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-            IconButton(
-              onClick = { talk.rateCurrent(Rating.UP) },
-              modifier = Modifier.size(40.dp),
-              enabled = talk.state != TalkController.State.THINKING,
-            ) {
-              Icon(
-                Icons.Rounded.ThumbUp, "This answer was helpful", Modifier.size(17.dp),
-                tint = if (line.rating == Rating.UP) Brand.Teal else Color.White.copy(alpha = 0.45f),
-              )
-            }
-            IconButton(
-              onClick = { talk.rateCurrent(Rating.DOWN) },
-              modifier = Modifier.size(40.dp),
-              enabled = talk.state != TalkController.State.THINKING,
-            ) {
-              Icon(
-                Icons.Rounded.ThumbDown, "This answer needs improvement", Modifier.size(17.dp),
-                tint = if (line.rating == Rating.DOWN) Color(0xFFFFB4AB) else Color.White.copy(alpha = 0.45f),
-              )
-            }
-            Spacer(Modifier.weight(1f))
-          }
-        }
-      }
       Spacer(Modifier.height(10.dp))
       Box(Modifier.weight(1f).fillMaxWidth()) {
         Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
@@ -320,6 +291,36 @@ private fun ReplyCard(talk: TalkController, modifier: Modifier) {
               style = MaterialTheme.typography.bodyLarge,
               color = Color.White.copy(alpha = if (talk.transcript.isBlank()) 0.45f else 0.86f),
             )
+          }
+        }
+      }
+      // Rate what was just said. Voice replies are the likeliest to be wrong (the question came in
+      // through ASR), and this is the only way to mark one — the same verdict the chat screen stores.
+      // Placed AFTER the text, where it belongs: a verdict on a reply cannot come before the reply.
+      talk.answerLine?.let { line ->
+        if (line.rating != null || talk.state != TalkController.State.THINKING) {
+          Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+            IconButton(
+              onClick = { talk.rateCurrent(Rating.UP) },
+              modifier = Modifier.size(40.dp),
+              enabled = talk.state != TalkController.State.THINKING,
+            ) {
+              Icon(
+                Icons.Rounded.ThumbUp, "This answer was helpful", Modifier.size(17.dp),
+                tint = if (line.rating == Rating.UP) Brand.Teal else Color.White.copy(alpha = 0.45f),
+              )
+            }
+            IconButton(
+              onClick = { talk.rateCurrent(Rating.DOWN) },
+              modifier = Modifier.size(40.dp),
+              enabled = talk.state != TalkController.State.THINKING,
+            ) {
+              Icon(
+                Icons.Rounded.ThumbDown, "This answer needs improvement", Modifier.size(17.dp),
+                tint = if (line.rating == Rating.DOWN) Color(0xFFFFB4AB) else Color.White.copy(alpha = 0.45f),
+              )
+            }
+            Spacer(Modifier.weight(1f))
           }
         }
       }
