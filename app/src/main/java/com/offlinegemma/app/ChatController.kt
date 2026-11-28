@@ -998,8 +998,12 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
                 if (!rewriting) {
                   val shown = if (agent) Tools.stripCalls(out) else out
                   val safe = if (bengaliAnswer) keepBengali(shown) else shown
-                  update(answerId) { it.copy(text = safe) }
+                  // Speech first, screen second. The other order put the sentence on screen a frame
+                  // before the speaker was even told about it, and then TTS needed ~500 ms to start —
+                  // so a whole clause was readable before a sound came out. Handing it to the speaker
+                  // first overlaps that start-up with rendering instead of adding to it.
                   onAnswerText?.invoke(answerId, safe)
+                  update(answerId) { it.copy(text = safe) }
                 }
               }
             }

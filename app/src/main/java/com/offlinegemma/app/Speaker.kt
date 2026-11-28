@@ -82,7 +82,10 @@ class Speaker(context: Context, private val prefs: Prefs) {
     tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
       override fun onStart(id: String?) {
         if (firstAt > 0) {
-          android.util.Log.i("Speaker", "First sound after ${android.os.SystemClock.elapsedRealtime() - firstAt} ms (voice ${current?.name})")
+          // Report the voice requested for THIS utterance. `current` is whatever was set last, which is
+          // not the same thing and hid a Bengali answer being spoken by an English voice.
+          val used = id?.let { voiceOf.remove(it) } ?: "?"
+          android.util.Log.i("Speaker", "First sound after ${android.os.SystemClock.elapsedRealtime() - firstAt} ms (asked ${used}, engine ${tts.voice?.name})")
           firstAt = 0
         }
         // Proof the holding line was actually heard, as opposed to merely requested. Measured from the
@@ -130,7 +133,15 @@ class Speaker(context: Context, private val prefs: Prefs) {
   fun voiceFor(text: String): Voice? {
     val pick = chosen()
     return if (hasBengali(text)) {
-      pick?.takeIf { it.locale.language == "bn" } ?: bestVoice("bn") ?: pick
+      val bn = pick?.takeIf { it.locale.language == "bn" } ?: bestVoice("bn")
+      // Bengali script read by an English voice is not "slightly wrong", it is unintelligible — and
+      // the fallback here used to hand back `pick` (often English) with no sign that anything was off.
+      // Report which voice is about to read Bengali text so this can never be a silent failure.
+      android.util.Log.i(
+        "Speaker",
+        if (bn != null) "Bengali voice: ${bn.name} (${bn.locale})" else "NO Bengali voice installed",
+      )
+      bn ?: pick
     } else {
       pick?.takeIf { it.locale.language != "bn" } ?: bestVoice(appLanguage) ?: bestVoice("en")
     }
@@ -152,6 +163,10 @@ class Speaker(context: Context, private val prefs: Prefs) {
     ended = false
     speaking = true
     readingId = id
+    // No warm-up speak() here on purpose. The holding line is already spoken before the answer
+    // begins, and that is what pays the engine's ~500 ms cold start. Queuing a silent utterance at
+    // this point would be *worse than nothing*: it is added to the same queue as the answer, so the
+    // first real sentence would wait behind it.
   }
 
   /** Speak each finished sentence of [text] that has not been said yet. */
@@ -162,6 +177,20 @@ class Speaker(context: Context, private val prefs: Prefs) {
     if (!final) {
       upto = spoken
       Regex("[.!?।…](\\s|$)|\\n").findAll(clean).forEach { if (it.range.first + 1 > spoken) upto = it.range.first + 1 }
+      // Nothing spoken yet and no sentence has finished: a model can emit a long opening clause before
+      // it reaches a full stop, and the screen fills with readable words while talk mode is still
+      // silent — which is exactly the "text appears, then the voice starts" gap. Start on the first
+      // clause instead of the first sentence, but only for the opening piece and only at a real break:
+      // a comma or ~90 characters ending on a word boundary.
+      if (upto <= spoken && spoken == 0) {
+        val head = clean.take(140)
+        val stop = listOf(", ", "; ", "। ", " — ")
+          .map { head.indexOf(it) }
+          .filter { it in 20 until 140 }
+          .minOrNull()
+          ?: if (clean.length >= 90) clean.lastIndexOf(' ', 90).takeIf { it > 20 } else null
+        if (stop != null) upto = stop + 1
+      }
     }
     if (upto <= spoken) return
     val chunk = clean.substring(spoken, upto).replace(Regex("\\s+"), " ").trim()
@@ -196,16 +225,33 @@ class Speaker(context: Context, private val prefs: Prefs) {
   private var current: Voice? = null
   /** When the first piece of a reply was handed over (to measure how fast speech starts). */
   @Volatile private var firstAt = 0L
+  /** Voice actually requested for each queued utterance, so onStart can report the truth. */
+  private val voiceOf = java.util.concurrent.ConcurrentHashMap<String, String>()
 
   private fun say(chunk: String) {
     if (!ready) return
     tts.setSpeechRate(prefs.speechRate)
     if (queued.get() == 0) firstAt = android.os.SystemClock.elapsedRealtime()
     for (p in pieces(chunk, nothingPlaying = queued.get() == 0)) {
-      voiceFor(p)?.let { v -> if (v != current) { tts.voice = v; current = v } }
+      val v = voiceFor(p)
+      // setVoice() returns an error code and used to be called as a plain assignment, so a rejected
+      // Bengali voice fell back to the engine default (en-US) silently — which is why Bengali text was
+      // read by an English voice and came out as noise rather than words.
+      if (v != null && v != current) {
+        val ok = tts.setVoice(v)
+        current = v
+        if (ok != TextToSpeech.SUCCESS) {
+          android.util.Log.w("Speaker", "setVoice(${v.name}) rejected ($ok); falling back to its language")
+          // At least make the language right: an engine with a partial Bengali pack can still say the
+          // script if it is told the locale, even when the full voice is not usable.
+          tts.language = v.locale
+        }
+      }
+      val id = "u${counter++}"
+      voiceOf[id] = v?.name ?: "default"
       queued.incrementAndGet()
       // Played strictly in order (QUEUE_ADD); each piece uses the voice set just before it.
-      tts.speak(p, TextToSpeech.QUEUE_ADD, Bundle(), "u${counter++}")
+      tts.speak(p, TextToSpeech.QUEUE_ADD, Bundle(), id)
     }
   }
 
