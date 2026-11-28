@@ -1035,9 +1035,19 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             // going for another 489 — "আরও তথ্য জানতে আপনি নিম্নলিখিত সূত্রপাতটি দেখতে পারেন:" plus a
             // 200-character percent-encoded URL. Decode cost 34.8 s for that answer. The old wording
             // said not to add a list of links; it did not say to stop, so it filled the space instead.
-            append("\n\n[Stop as soon as the question is answered. Give the answer in one or two short ")
-            append("sentences. Do not offer further reading, do not name a website, and do not write a ")
-            append("URL: the app already lists the sources.]")
+            // Terse only for a question that does not need working. "One or two short sentences" was
+            // added to stop further-reading prose, and it also told the model to compress MATHS — which
+            // directly contradicts the numericQ block below ("show every step"). A sum answered in two
+            // sentences loses the working that made it self-explanatory in the first place.
+            if (numericQ) {
+              append("\n\n[Answer using these sources. Show the working, then the answer. Do not offer ")
+              append("further reading, do not name a website, and do not write a URL: the app already ")
+              append("lists the sources.]")
+            } else {
+              append("\n\n[Stop as soon as the question is answered. Give the answer in one or two short ")
+              append("sentences. Do not offer further reading, do not name a website, and do not write a ")
+              append("URL: the app already lists the sources.]")
+            }
           }
           if (numericQ) {
             // A number with no work behind it cannot be checked, and a small model's number is
@@ -1155,10 +1165,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               choices -> CHOICE_MAX_OUTPUT
               // A study answer key that binds means the answer is a phrase — the measured case was 12
               // characters ("…হলো ১৫ : ২১ : ৯১।") and the model spent another 489 characters on
-              // further-reading prose, at 3.6 tok/s. Capping the FIRST round (not a rewrite) stops the
-              // rambling at the source instead of trimming it afterwards; 200 tokens is ~4x the
-              // longest real answer seen from a bound key.
-              bindingKey != null && !rewriting -> ANSWER_KEY_MAX_OUTPUT
+              // further-reading prose, at 3.6 tok/s.
+              //
+              // NOT for a maths question. This cap used to apply to every bound key, including sums,
+              // and that was a regression: a maths answer is supposed to SHOW its working, and 200
+              // tokens cut the derivation short — so the answer lost the self-explanation it always
+              // had, and the working had to be asked for separately afterwards. Answer length for a
+              // sum is set by the number of steps, not by a ceiling.
+              bindingKey != null && !rewriting && !numericQ -> ANSWER_KEY_MAX_OUTPUT
               else -> null
             }
             roundStart = System.currentTimeMillis()
