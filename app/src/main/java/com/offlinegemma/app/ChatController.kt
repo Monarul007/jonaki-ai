@@ -826,7 +826,29 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // `var`, not `val`: the adjudicator may drop this block when a study answer key settles the
         // question, and a second retrieval may replace it. Both decisions are made below.
         var webBlock = if (topic != null && !blocksPlan && links.isEmpty() && !testCode) {
-          if (Rules.skipPlanner(topic, canSearch)) {
+          if (Rules.messageIsGoodQuery(topic, canSearch)) {
+            // The message is already the search phrase, so the planner's round-trip is skipped and
+            // the message itself is searched. Measured: the planner took 6-17 s to produce this, and
+            // on Bengali questions its rewrite was often WORSE than the message — one produced
+            // "ইতিহাস বিষয়ে অভিজ্ঞ ব্যক্তি এক কথায় কী হবে" for a question that should have been
+            // searched verbatim, and the pages it fetched had to be discarded.
+            //
+            // num_results/options/calc are all decided locally here: no options (checked above), no
+            // digits (checked above, so no calculator), and the query is the message.
+            choices = false
+            numericQ = false
+            planQueryUsed = topic
+            Log.i("ChatController", "planner skipped: message is already a query ('${topic.take(60)}')")
+            AgentTrace.note("PLAN", "skipped: using the message as the query")
+            if (canSearch) {
+              try {
+                researchWeb(answerId, topic, topic, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
+              } catch (t: Throwable) {
+                Log.w("ChatController", "search failed, answering without it", t)
+                ""
+              }
+            } else ""
+          } else if (Rules.skipPlanner(topic, canSearch)) {
             // The message already settles what the planner would have been asked for, so its
             // 6.5 s round-trip is skipped. Options are read straight off the message.
             choices = Tools.optionsOf(topic).size >= 2
@@ -835,6 +857,24 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             Log.i("ChatController", "plan skipped (nothing to decide): choices=$choices numeric=$numericQ")
             ""
           } else {
+          // Start a search on the message ITSELF now, in parallel with the planner.
+          //
+          // The planner and the search are independent: one writes a query, the other fetches pages.
+          // Running them in sequence meant 6-17 s of planner before the first network call, so a turn
+          // paid both costs one after the other. Starting the message-as-query search immediately
+          // overlaps them, and it is a genuinely good query most of the time — when it is, the pages
+          // are already in hand by the time the planner returns.
+          //
+          // If the planner comes back with a different query, that one is used instead (the planner's
+          // judgement is the more careful one); the wasted early search costs no wall time because it
+          // ran during the planning wait.
+          val earlySearch = if (canSearch && topic.length >= 12) {
+            async {
+              runCatching {
+                researchWeb(answerId, topic, topic, numbered, found, 1300)
+              }.getOrDefault("")
+            }
+          } else null
           val plan = planAnswer(topic, canSearch, spoken = voice)
           choices = plan.choices
           planForCalc = plan.calc
@@ -883,9 +923,23 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // A sum needs the calculator, not the web: searching a word problem returned
           // calculator.net and "long division" pages, which only added noise the model then
           // tried to reconcile with its own working.
+          //
+          // The early search (started before the planner) is used when the planner agreed with the
+          // message or produced nothing better; otherwise it is dropped and the planner's query is
+          // used. Either way the person waited for the planner, not the planner plus a search.
+          val early = earlySearch?.let { runCatching { it.await() }.getOrDefault("") }.orEmpty()
+          val sameQuery = plan.query == null || plan.query.trim() == topic.trim()
           if (canSearch && plan.query != null && !numericQ) {
-            planQueryUsed = plan.query
-            researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
+            if (sameQuery && early.isNotBlank()) {
+              AgentTrace.note("PLAN", "reused the search started during planning")
+              early
+            } else {
+              planQueryUsed = plan.query
+              researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
+            }
+          } else if (early.isNotBlank()) {
+            // No planner query at all: the early result is the only evidence there is.
+            early
           } else ""
           }
         } else ""
