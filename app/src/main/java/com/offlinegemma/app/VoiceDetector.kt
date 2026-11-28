@@ -5,24 +5,36 @@ import kotlin.math.sqrt
 
 /**
  * "Is someone talking?" — the sound rules of talk mode, kept free of Android so they can be tested.
- * Same numbers as chat.html onTalkAudio / finishUtterance:
- * threshold = max(0.012, room noise x 3); about 0.35 s kept from before speech starts;
- * the clip ends after 2.5 s of quiet or at 30 s; clips with under 0.5 s of voice are ignored.
+ * threshold = max(0.012, room noise x 3); about 0.35 s kept from before speech starts; a turn ends
+ * after a short stretch of quiet, and clips with under 0.5 s of voice are ignored.
  * Barge-in detection exists, but talk mode disables it: only a tap on the orb stops a reply.
  */
 class VoiceDetector(
   private val rate: Int = 16000,
   private val preFrames: Int = 11,
   /**
-   * How much quiet means "they finished the thought".
+   * Quiet that ends the turn once a full sentence is clearly under way.
    *
-   * This is the single biggest term in how long a spoken turn feels dead, because nothing at all
-   * happens until it elapses: it was 2500 ms, and 2.5 s of silence after every question reads as "it
-   * did not hear me". 900 ms is the usual end-of-turn window for conversational assistants (long
-   * enough for a natural pause between clauses, short enough not to feel broken), and the 0.35 s of
-   * pre-roll kept from before speech still protects the start of a word.
+   * Someone waiting through 2.5 s of silence after every question reads as "it did not hear me", so
+   * this is short — 900 ms is the usual conversational end-of-turn window.
    */
   private val endSilenceMs: Int = 900,
+  /**
+   * Quiet that ends the turn when only a word or two has been said.
+   *
+   * Measured failure, and the reason this is not one fixed number: "রবীন্দ্রনাথ ঠাকুরের সোনার তরী
+   * কবিতাটি পড়ে শোনাও" (read me Tagore's Sonar Tori) was cut after "রবীন্দ্রনাথ ঠাকুরের". The 900 ms
+   * window expired in the breath before "সোনার তরী", the fragment was submitted as its own question,
+   * and the rest arrived as a second turn — the user got an answer about the wrong thing, and the
+   * model transcribed a clip that had been sliced mid-phrase.
+   *
+   * A short burst is far more likely to be the start of a sentence than a whole question, so it earns
+   * a longer grace period. Once enough has been said the window tightens back to 900 ms, so ordinary
+   * questions still end promptly.
+   */
+  private val patientSilenceMs: Int = 1800,
+  /** Voiced time below which an utterance counts as "only a word or two", so the longer window applies. */
+  private val shortUtteranceMs: Double = 1500.0,
   /** How far above the learned echo the user must be to interrupt (loudspeaker only). */
   var echoMargin: Double = 2.5,
   /** Talk mode turns this off: only an orb tap may interrupt a reply. */
@@ -85,11 +97,12 @@ class VoiceDetector(
       Mode.RECORDING -> {
         rec.add(x)
         if (r > th) { quietAt = now; voicedMs += ms }
-        if (now - quietAt > endSilenceMs || now - startAt > 30_000) {
+        val window = if (voicedMs < shortUtteranceMs) patientSilenceMs else endSilenceMs
+        if (now - quietAt > window || now - startAt > 30_000) {
           val chunks = rec.toList()
           rec.clear()
           // quietAt is the *last* frame that was loud, so this is the real end of speech — not the
-          // moment the window elapsed, which is endSilenceMs later. Anything timed "from the end of
+          // moment the window elapsed, which is `window` later. Anything timed "from the end of
           // speech" has to use this or it silently includes the whole silence window.
           if (voicedMs < 500) Event.Discard else Event.Finish(chunks, quietAt)
         } else Event.None

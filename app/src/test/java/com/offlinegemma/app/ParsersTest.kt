@@ -256,10 +256,29 @@ class VoiceTest {
     val v = VoiceDetector()
     v.run(0.003, 20, 0, VoiceDetector.Mode.LISTENING)
     v.feed(frame(0.1), 1000, VoiceDetector.Mode.LISTENING)
-    v.run(0.1, 30, 1032, VoiceDetector.Mode.RECORDING) // last loud frame at 1960
+    v.run(0.1, 70, 1032, VoiceDetector.Mode.RECORDING) // ~2.2 s: a real sentence, not a fragment
     // Exactly 1 s of quiet must be enough to submit.
-    val quiet = v.run(0.002, 32, 2000, VoiceDetector.Mode.RECORDING)
-    assertTrue("1 s of silence should end the turn", quiet.any { it is VoiceDetector.Event.Finish })
+    val quiet = v.run(0.002, 32, 3280, VoiceDetector.Mode.RECORDING)
+    assertTrue("1 s of silence should end a full sentence", quiet.any { it is VoiceDetector.Event.Finish })
+  }
+
+  /**
+   * The regression that made two turns out of one question: after "রবীন্দ্রনাথ ঠাকুরের" there is a
+   * breath before "সোনার তরী", and a fixed 900 ms window submitted the fragment as its own question.
+   */
+  @Test fun aShortBurstGetsALongerGracePeriod() {
+    val v = VoiceDetector()
+    v.run(0.003, 20, 0, VoiceDetector.Mode.LISTENING)
+    v.feed(frame(0.1), 1000, VoiceDetector.Mode.LISTENING)
+    v.run(0.1, 30, 1032, VoiceDetector.Mode.RECORDING) // ~1.0 s: "রবীন্দ্রনাথ ঠাকুরের"
+    // A 1.2 s breath must NOT end it — longer than the tight window, under the patient one.
+    val breath = v.run(0.002, 37, 2000, VoiceDetector.Mode.RECORDING)
+    assertFalse("a short burst must not be submitted mid-sentence", breath.any { it is VoiceDetector.Event.Finish })
+    // …and the sentence continues normally.
+    val rest = v.run(0.1, 40, 3200, VoiceDetector.Mode.RECORDING)
+    assertFalse(rest.any { it is VoiceDetector.Event.Finish })
+    val after = v.run(0.002, 40, 4500, VoiceDetector.Mode.RECORDING)
+    assertTrue("the finished sentence is submitted", after.any { it is VoiceDetector.Event.Finish })
   }
 
   @Test fun coughIsIgnored() {
