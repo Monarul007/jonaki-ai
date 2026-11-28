@@ -225,6 +225,9 @@ class Speaker(context: Context, private val prefs: Prefs) {
       queued.incrementAndGet()
       // Played strictly in order (QUEUE_ADD); each piece uses the voice set just before it.
       tts.speak(p, TextToSpeech.QUEUE_ADD, Bundle(), id)
+      // What the engine is actually given, after speakable(). This is the only place that proves the
+      // cleaning worked: a unit test shows the function is right, not that its output reaches the TTS.
+      android.util.Log.i("Speaker", "say[${v?.locale ?: "default"}]: ${p.replace("\n", " ").take(160)}")
     }
   }
 

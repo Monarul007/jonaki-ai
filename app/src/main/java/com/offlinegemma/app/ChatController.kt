@@ -743,6 +743,17 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               append("comes from my study files; if you did not, never mention my study files at ")
               append("all. Never credit a website or book that is not in the list, and do not ")
               append("invent a source.]\n")
+              // These are exam questions and answer keys — a passage that states the answer is
+              // authoritative for it. Measured failure without this: the pack said "প্রথম কোন জেলা
+              // শত্রুমুক্ত হয়? উত্তর: যশোর" and was listed first, the web pages (3x more text, also
+              // in the prompt) mentioned Jhenaidah, and the answer came back "ঝিনাইদহ… [4]" — citing
+              // the web over the reference the question came from.
+              if (hits.any { it.source == "biddabari" || it.text.contains("উত্তর:", ignoreCase = false) }) {
+                append("These are multiple-choice questions WITH their answer keys: ")
+                append("“প্রশ্ন: … উত্তর: X”. When one of them asks this same question, that answer ")
+                append("is the correct one. State it, and do not contradict it with a web page ")
+                append("— if a source disagrees, the study-file answer wins.\n")
+              }
               hits.forEach { h ->
                 append("\n<${h.source} · ${h.title}>\n")
                 append(h.text.take(KNOWLEDGE_CHARS))
