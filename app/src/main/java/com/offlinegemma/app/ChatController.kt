@@ -637,6 +637,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // message, so they are used directly; the old placeholder ("the spoken message I just sent") is
     // only right when nothing could be heard from the clip at all.
     val asked = if (voice) display.ifBlank { "the spoken message I just sent" } else display
+    AgentTrace.begin(asked, voice, gemma.model.name, false, agentAllowed)
     var fixCode: String? = null
     var findFigures: Pair<Long, String>? = null
     job = scope.launch {
@@ -753,6 +754,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
               it.copy(tools = it.tools + ToolUse("knowledge", where, true, hits.first().text.take(400)))
             }
             Log.i("ChatController", "knowledge: ${hits.size} passages (${if (semantic != null) "semantic" else "bm25"}) for '${q.take(80)}'")
+            AgentTrace.note(
+              "RETRIEVE",
+              "${hits.size} study passage(s) via ${if (semantic != null) "semantic" else "bm25"} for '$q'",
+            )
+            hits.take(3).forEachIndexed { i, h ->
+              AgentTrace.note("  hit ${i + 1}", "${h.source}: ${h.text.replace("\n", " ⏎ ").take(220)}")
+            }
           }
         }
         // The model decided this is a pure calculation, so the study passages were never the
@@ -861,6 +869,14 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         gemma.onThought = { piece -> if (voice) Unit else update(answerId) { it.copy(thought = gemma.lastThought.toString()) } }
         // With sources already in hand, the tool-calling instructions only cost room and time.
         val agent = agentAllowed && webBlock.isBlank()
+        // Recorded because "why did it not use the tool?" is answered here: sources arrive pre-fetched
+        // from the planner, and then agent mode is switched OFF — the model is handed the evidence and
+        // told to answer, so it never decides anything itself.
+        AgentTrace.note(
+          "MODE",
+          "agent=${if (agent) "on" else "OFF"} (allowed=$agentAllowed, webBlock=${webBlock.length}ch) " +
+            "knowledge=${knowledge.length}ch calc=${planForCalc != null} think=$thinkNow",
+        )
         val text = buildString {
           // A spoken turn's words are already the message text (see transcribeFirst), so there is
           // nothing to re-state here.
@@ -982,12 +998,15 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         val bengaliAnswer = prefs.answerBengali || modelText.any { it in '\u0980'..'\u09FF' }
         while (true) {
           var out = ""
+          var roundStart = System.currentTimeMillis()
           try {
             // A multiple-choice answer is a label plus a few sentences. Left uncapped, E4B wrote a
             // full derivation for a one-option question: the NTRCA run took 409 s and 331 s on two
             // of them, at the ceiling of 2048 tokens. The question and options are already in the
             // prompt, so a tighter ceiling costs nothing but the rambling.
             val cap = if (choices) CHOICE_MAX_OUTPUT else null
+            roundStart = System.currentTimeMillis()
+            AgentTrace.round(turn + 1, prompt, 0)
             val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList(), think = thinkNow, maxTokens = cap)
               .catch { e -> update(answerId) { it.copy(error = friendlyError(e)) } }
             val limit = if (rewriting) ROUND_TIMEOUT_MS else FIRST_TIMEOUT_MS
@@ -1018,6 +1037,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             break
           }
           first = false
+          AgentTrace.reply(turn + 1, out, gemma.lastThought.toString(), System.currentTimeMillis() - roundStart)
           // A silent or noisy clip gets one plain answer and nothing else: there are no words to
           // search or rewrite. A clip whose words *were* understood is an ordinary question now, so
           // it goes through the same sources/rewrite path as a typed one.
@@ -1045,6 +1065,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             val calls = Tools.parseCalls(out)
             if (calls.isNotEmpty() && turn < MAX_TOOL_TURNS) {
               turn++
+              AgentTrace.note("DECIDE", "call ${calls.size} tool(s): ${calls.joinToString { "${it.name}(${it.args})" }}")
               // The reasoning has already been paid for: what is left is turning the calculator's
               // result into a sentence, and reasoning over it only adds ~40 s on a phone.
               thinkNow = false
@@ -1058,15 +1079,22 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             if (out.isBlank() && turn > 0 && !nudged) {
               // Small models sometimes go quiet after reading tool output; one nudge gets the answer out.
               nudged = true
+              AgentTrace.note("DECIDE", "blank reply after tool output -> nudge once")
               prompt = "Now answer my question using the tool results above."
               continue
             }
             if (turn > 0 && !pushed && Tools.announcedStep(out) && turn < MAX_TOOL_TURNS) {
               // It announced a step but stopped instead of calling the tool.
               pushed = true
+              AgentTrace.note("DECIDE", "announced a step without calling a tool -> push it to act")
               prompt = "Go ahead: do that now by calling the tool. Don't describe it."
               update(answerId) { it.copy(text = "") }
               continue
+            }
+            if (turn >= MAX_TOOL_TURNS && calls.isNotEmpty()) {
+              AgentTrace.note("DECIDE", "tool budget spent (MAX_TOOL_TURNS=$MAX_TOOL_TURNS), answering with what it has")
+            } else if (calls.isEmpty() && turn == 0) {
+              AgentTrace.note("DECIDE", "no tool call in round 1: answering from knowledge")
             }
           }
           // Swap in a buffered review/verification rewrite only when it is complete.
@@ -1286,6 +1314,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             "turn timing: prep=${prepMs}ms model=${decodeMs}ms tools=${toolMs}ms total=${finishedAt - enteredAt}ms " +
               "engine=${gemma.model.name} think=$thinkNow rounds=${turn + 1} chars=$answerChars " +
               "steps=[${steps.joinToString(" ")}]",
+          )
+          AgentTrace.end(
+            "${answerChars}ch answer after ${turn + 1} round(s), $toolMs ms in tools, " +
+              "${(finishedAt - enteredAt)} ms total",
           )
         }
         // A multiple-choice answer must name ONE option, and the same one throughout. The model
@@ -1641,6 +1673,10 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     // tighter sampler here, at the one rebuild this turn already needs, so no extra one is paid.
     gemma.startChat(history(before), numeric = plan.calc != null)
     Log.i("ChatController", "plan: search='${plan.query}' calc='${plan.calc}' choices=${plan.choices} (${tookMs} ms)")
+    AgentTrace.note(
+      "PLAN",
+      "web='${plan.query}' calc='${plan.calc}' choices=${plan.choices} (${tookMs} ms)",
+    )
     return plan
   }
 
@@ -1759,6 +1795,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     }
     status = if (c.name == "web_search") "Searching the web…" else "Reading a page…"
     update(answerId) { it.copy(tools = it.tools + ToolUse(c.name, detail)) }
+    val toolStart = System.currentTimeMillis()
     val (ok, result) = try {
       when (c.name) {
         "web_search" -> {
@@ -1780,6 +1817,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     update(answerId) { line ->
       line.copy(tools = line.tools.dropLast(1) + ToolUse(c.name, detail, ok, result.take(2000)))
     }
+    AgentTrace.tool(c.name, c.args, ok, result, System.currentTimeMillis() - toolStart)
     status = null
     return result
   }
