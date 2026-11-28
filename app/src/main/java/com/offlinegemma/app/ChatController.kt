@@ -2152,31 +2152,42 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     busy = true
     status = "Explaining…"
     scope.launch {
-      val ask = buildString {
-        append("My question: ${question.take(300)}\n\n")
-        append("My answer: ${line.text.take(700)}\n")
-        if (evidence.isNotBlank()) append(evidence)
-        append("\nExplain this answer to me. Use exactly this shape, nothing else:\n")
-        append("ANSWER: why the answer is correct, in one sentence.\n")
-        append("REASON: the step or rule that makes it correct, in one sentence.\n")
-        append("CONCEPT: the idea behind it, in one or two sentences a beginner could follow.\n")
-        if (bengali) append("Write in Bengali, in simple words.\n")
-        append("Only use reasons the passages above support. If you cannot explain it simply and ")
-        append("correctly, reply with this one line instead: CANNOT_EXPLAIN")
+      // try/finally, not straight-line cleanup.
+      //
+      // The reset used to sit after gemma.startChat(...), so anything that threw or cancelled before
+      // reaching it left status = "Explaining…" set forever and the spinner span for good. A status
+      // that is set must be cleared on every exit path — that is the rule this broke.
+      var text = ""
+      try {
+        val ask = buildString {
+          append("My question: ${question.take(300)}\n\n")
+          append("My answer: ${line.text.take(700)}\n")
+          if (evidence.isNotBlank()) append(evidence)
+          append("\nExplain this answer to me. Use exactly this shape, nothing else:\n")
+          append("ANSWER: why the answer is correct, in one sentence.\n")
+          append("REASON: the step or rule that makes it correct, in one sentence.\n")
+          append("CONCEPT: the idea behind it, in one or two sentences a beginner could follow.\n")
+          if (bengali) append("Write in Bengali, in simple words.\n")
+          append("Only use reasons the passages above support. If you cannot explain it simply and ")
+          append("correctly, reply with this one line instead: CANNOT_EXPLAIN")
+        }
+        val out = runCatching { gemma.oneShot(ask, 320) }.getOrDefault("")
+        // oneShot closes the conversation; restore it or the next answer runs on a closed one.
+        runCatching { gemma.startChat(history(lines)) }
+        val cleaned = out.trim()
+        text = if (cleaned.isBlank() || cleaned.contains("CANNOT_EXPLAIN", ignoreCase = true)) {
+          if (bengali) "দুঃখিত, আমি এই উত্তরটি সহজভাবে ব্যাখ্যা করতে পারছি না।"
+          else "Sorry — I can't explain this answer simply and correctly."
+        } else cleaned
+        update(answerId, shown) { it.copy(explain = text) }
+        save(shown)
+        Log.i("ChatController", "explained answer $answerId: ${if (text.startsWith("দুঃখিত") || text.startsWith("Sorry")) "declined" else "${text.length} chars"}")
+      } catch (t: Throwable) {
+        Log.w("ChatController", "explain failed for answer $answerId", t)
+      } finally {
+        busy = false
+        status = null
       }
-      val out = runCatching { gemma.oneShot(ask, 320) }.getOrDefault("")
-      // oneShot closes the conversation; restore it or the next answer runs on a closed one.
-      gemma.startChat(history(lines.dropLast(0)))
-      busy = false
-      status = null
-      val cleaned = out.trim()
-      val text = if (cleaned.isBlank() || cleaned.contains("CANNOT_EXPLAIN", ignoreCase = true)) {
-        if (bengali) "দুঃখিত, আমি এই উত্তরটি সহজভাবে ব্যাখ্যা করতে পারছি না।"
-        else "Sorry — I can't explain this answer simply and correctly."
-      } else cleaned
-      update(answerId, shown) { it.copy(explain = text) }
-      save(shown)
-      Log.i("ChatController", "explained answer $answerId: ${if (text.startsWith("দুঃখিত") || text.startsWith("Sorry")) "declined" else "${text.length} chars"}")
     }
   }
 
