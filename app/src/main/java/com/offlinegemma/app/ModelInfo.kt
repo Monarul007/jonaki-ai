@@ -92,6 +92,26 @@ object ModelInfo {
     return info.totalMem
   }
 
+  /** Available physical memory right now. A phone can ship as 8 GB yet expose far less, so "can I run
+   *  it" has to ask for what is actually free, not the advertised total. */
+  fun availableRamBytes(context: Context): Long {
+    val info = ActivityManager.MemoryInfo()
+    (context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager).getMemoryInfo(info)
+    return info.availMem
+  }
+
+  /**
+   * Which models are installable on this phone right now. Eligibility is about what is genuinely free:
+   * available memory for the model's weights plus cache, and free storage. The one-time download screen
+   * offers this list and nothing else.
+   */
+  fun installableModels(context: Context): List<ChatModel> =
+    installableModels(ChatModel.entries, availableRamBytes(context), freeBytes(context))
+
+  /** Pure core of [installableModels], so the filter itself can be unit-tested. */
+  fun installableModels(models: List<ChatModel>, availableRamBytes: Long, freeBytes: Long): List<ChatModel> =
+    models.filter { m -> availableRamBytes >= MIN_RAM_BYTES && freeBytes >= (m.SIZE_BYTES + SPARE_BYTES) }
+
   /** Which models are on this phone right now, for Settings. */
   fun installed(context: Context): List<ChatModel> = ChatModel.entries.filter { isDownloaded(context, it) }
 

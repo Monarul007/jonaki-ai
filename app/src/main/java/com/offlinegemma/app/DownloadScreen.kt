@@ -70,6 +70,7 @@ import com.offlinegemma.app.ui.LocalExtraColors
 /** First launch: a welcome page, then the one-time model download. */
 @Composable
 fun OnboardingScreen(prefs: Prefs, onModelReady: () -> Unit) {
+  val context = LocalContext.current
   var page by rememberSaveable(prefs.onboarded) { mutableIntStateOf(if (prefs.onboarded) 1 else 0) }
   AnimatedContent(
     targetState = page,
@@ -80,6 +81,7 @@ fun OnboardingScreen(prefs: Prefs, onModelReady: () -> Unit) {
     label = "onboarding",
   ) { p ->
     if (p == 0) WelcomePage(onNext = { prefs.onboarded = true; page = 1 })
+    else if (ModelInfo.installed(context).isNotEmpty()) onModelReady()
     else DownloadPage(prefs, onBack = { page = 0 }, onModelReady = onModelReady)
   }
 }
@@ -117,7 +119,10 @@ private fun WelcomePage(onNext: () -> Unit) {
 @Composable
 private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> Unit) {
   val context = LocalContext.current
-  val target = prefs.model
+  val installables = remember { ModelInfo.installableModels(context) }
+  // The one-time download screen only ever offers models that fit this phone right now; a phone that
+  // is short of memory or space gets the honest list (empty) rather than a button that cannot run.
+  val target = installables.firstOrNull { it == prefs.model } ?: installables.firstOrNull() ?: ChatModel.E2B
   var refresh by remember { mutableIntStateOf(0) } // bumps storage numbers after pause/cancel
   val infos by WorkManager.getInstance(context)
     .getWorkInfosForUniqueWorkFlow(DL.uniqueName(target.name))
@@ -142,6 +147,7 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
   val free = remember(refresh, info?.state) { ModelInfo.freeBytes(context) }
   val needed = remember(refresh, info?.state) { ModelInfo.bytesNeeded(context, target) }
   val ram = remember { ModelInfo.totalRamBytes(context) }
+  val availRam = remember { ModelInfo.availableRamBytes(context) }
   val extra = LocalExtraColors.current
 
   Column(
@@ -151,11 +157,58 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Back") }
     Text("One-time download", style = MaterialTheme.typography.headlineMedium)
     Text(
-      "The Jonaki AI model is ${formatBytes(target.SIZE_BYTES)}. It is saved inside this app only, " +
-        "checked for damage, and then everything works offline.",
+      "Jonaki AI can run ${installables.size} model${if (installables.size == 1) "" else "s"} on this phone. " +
+        "It is saved inside this app only, checked for damage, and then everything works offline.",
       style = MaterialTheme.typography.bodyLarge,
       color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+
+    if (installables.isEmpty()) {
+      Text(
+        "No Jonaki AI model fits this phone right now.",
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.error,
+      )
+      Text(
+        "Memory: ${formatBytes(ram)} total, ${formatBytes(availRam)} available. Storage: ${formatBytes(free)} free, about ${formatBytes(needed)} needed. Jonaki AI needs roughly ${formatBytes(ChatModel.E2B.SIZE_BYTES)} plus headroom, so free some memory or space before retrying.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+      )
+    } else {
+      Column(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+      ) {
+        for (m in installables) {
+          val here = ModelInfo.isDownloaded(context, m)
+          val running = prefs.model == m
+          Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+              if (running) Icons.Rounded.CheckCircle else Icons.Rounded.CloudDownload,
+              null,
+              tint = MaterialTheme.colorScheme.primary,
+            )
+            Column(Modifier.weight(1f).padding(horizontal = 16.dp)) {
+              Text(
+                m.label + if (running) " — in use" else "",
+                style = MaterialTheme.typography.titleSmall,
+              )
+              Text(
+                if (here) "Installed, ${formatBytes(m.SIZE_BYTES)}. ${m.speed}."
+                else "Not installed · ${formatBytes(m.SIZE_BYTES)} · ${m.speed}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            if (!here && !running) {
+              OutlinedButton(onClick = { DL.start(context, prefs.wifiOnly, m.name) }) {
+                Text("Download", style = MaterialTheme.typography.labelLarge)
+              }
+            }
+          }
+        }
+      }
+    }
 
     SoftCard(Modifier.fillMaxWidth()) {
       Column(Modifier.padding(vertical = 8.dp)) {
@@ -167,12 +220,12 @@ private fun DownloadPage(prefs: Prefs, onBack: () -> Unit, onModelReady: () -> U
           okColor = extra.ok,
         )
         HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
-        val bigPhone = ram >= ModelInfo.MIN_RAM_BYTES
+        val bigPhone = availRam >= ModelInfo.MIN_RAM_BYTES
         CheckRow(
           if (bigPhone) Icons.Rounded.Memory else Icons.Rounded.Speed,
           "Memory",
-          if (bigPhone) "${formatBytes(ram)} · great for Jonaki AI"
-          else "${formatBytes(ram)} · Jonaki AI works, but answers come slowly (a few words a second). Phones with 8 GB are faster.",
+          if (bigPhone) "${formatBytes(ram)} of memory available · great for Jonaki AI"
+          else "${formatBytes(ram)} of memory available · Jonaki AI works, but answers come slowly (a few words a second). Phones with 8 GB are faster.",
           ok = if (bigPhone) true else null,
           okColor = extra.ok,
         )
