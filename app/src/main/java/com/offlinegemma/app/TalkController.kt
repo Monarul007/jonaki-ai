@@ -89,17 +89,24 @@ class TalkController(private val context: Context, private val chat: ChatControl
       }
     }
     // Mirror the work as it happens, so the voice card is never a blank box while the turn is being
-    // prepared. Polled rather than pushed: the steps live on the answer line and are replaced wholesale
-    // as each one starts and finishes, and the screen only needs them a few times a second.
+    // prepared.
+    //
+    // Do NOT look these up by `answerId`. That id is only set by onAnswerStart, which fires after
+    // planning and retrieval have finished — i.e. after every step worth showing has already been
+    // added. Polling by id therefore showed "Thinking it through…" for the whole prep and then
+    // revealed the complete list in one go, which is not a progress display at all.
+    //
+    // The answer line itself exists from the moment the turn is submitted (ChatController adds it
+    // with done=false before any work), so the newest unfinished model line is the right thing to
+    // watch, and it is right from the first step.
     main.post(object : Runnable {
       override fun run() {
         if (running) {
-          val id = answerId
-          val line = id?.let { chat.lines.lastOrNull { l -> l.id == it } }
-          steps = line?.tools.orEmpty()
-          doing = if (line?.done == false) chat.status else null
+          val live = chat.lines.lastOrNull { it.who == Who.MODEL && !it.done }
+          steps = live?.tools.orEmpty()
+          doing = chat.status
         }
-        main.postDelayed(this, 400)
+        main.postDelayed(this, 250)
       }
     })
     // Preparation (transcribe -> plan -> search -> first token) takes seconds before any answer text

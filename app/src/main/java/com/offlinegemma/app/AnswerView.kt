@@ -60,8 +60,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -122,7 +125,9 @@ fun Answer(
       Spacer(Modifier.width(8.dp))
       Text("Jonaki AI", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    if (line.tools.isNotEmpty() || line.thought.isNotBlank()) WorkPanel(line)
+    if (line.tools.isNotEmpty() || line.thought.isNotBlank() || (!line.done && chat?.status != null)) {
+      WorkPanel(line, chat?.status)
+    }
     if (line.text.isEmpty() && !line.done) {
       Shimmer(
         chat?.queuePosition(line.id)?.let { ahead ->
@@ -287,8 +292,14 @@ private fun SmallAction(icon: androidx.compose.ui.graphics.vector.ImageVector, l
  * reading, the way a coding agent shows its work. The answer below stays the main thing.
  */
 @Composable
-fun WorkPanel(line: ChatLine) {
-  var open by remember { mutableStateOf(false) }
+fun WorkPanel(line: ChatLine, doing: String? = null) {
+  // Open while the answer is being worked out, closed once it is done.
+  //
+  // It was always closed, so during a turn the reader saw one changing summary line and had to expand
+  // it to see what was happening — and by then the step was already over. Watching the work is the
+  // point while it runs; afterwards it is noise beside a finished answer, so it folds itself away.
+  var open by remember(line.id) { mutableStateOf(!line.done) }
+  LaunchedEffect(line.done) { if (line.done) open = false }
   val uri = LocalUriHandler.current
   val muted = MaterialTheme.colorScheme.onSurfaceVariant
   // A finished answer must never show a spinner: once the reply is done, nothing is still running,
@@ -309,6 +320,10 @@ fun WorkPanel(line: ChatLine) {
       Text(
         when {
           running != null -> toolLabel(running)
+          // While the turn is still running, the live activity is the honest label. The tool list only
+          // holds steps that have FINISHED, so showing a summary of it during prep named work that was
+          // already over and hid the work in progress.
+          !line.done && doing != null -> doing
           line.thought.isNotBlank() -> "Worked through it · $steps steps"
           else -> toolSummary(line.tools)
         },

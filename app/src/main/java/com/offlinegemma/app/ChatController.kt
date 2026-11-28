@@ -694,6 +694,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // Asking the same thing out loud used to skip the study files entirely, which read as the app
         // ignoring what you had fed it.
         var knowledge = ""
+        var bindingKey: Adjudicator.Key? = null
+        /** The web query the first round actually used, so a retry does not repeat it verbatim. */
+        var planQueryUsed: String? = null
         val searchFor = when {
           topic != null -> topic
           !voice -> modelText      // typed with no words of its own (attachment only), as before
@@ -731,6 +734,11 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             else -> rawHits.filter(::hasDigit)
           }
           if (hits.isNotEmpty()) {
+            // Decided here, where the passages exist, and used further down to suppress a competing
+            // web block. A study passage that states the answer settles the question.
+            bindingKey = hits.asSequence()
+              .mapNotNull { p -> Adjudicator.answerKey(p)?.takeIf { k -> Adjudicator.answers(k, topic ?: asked) } }
+              .firstOrNull()
             knowledge = buildString {
               // "Say it comes from my study files" was an instruction to *claim*, not to check: a
               // question the pack cannot answer still got "according to your study files" over a
@@ -802,7 +810,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // *slower*: prep fell 18.6 s -> 4.1 s, but E4B then took rounds=3 and 44.2 s without ever
         // calling the search tool, and the total went from 43.8 s to 48.3 s. A 2B model has the tool
         // and does not reach for it, so one forced search is worth its 11.8 s until that changes.
-        val webBlock = if (topic != null && !blocksPlan && links.isEmpty() && !testCode) {
+        // `var`, not `val`: the adjudicator may drop this block when a study answer key settles the
+        // question, and a second retrieval may replace it. Both decisions are made below.
+        var webBlock = if (topic != null && !blocksPlan && links.isEmpty() && !testCode) {
           if (Rules.skipPlanner(topic, canSearch)) {
             // The message already settles what the planner would have been asked for, so its
             // 6.5 s round-trip is skipped. Options are read straight off the message.
@@ -861,6 +871,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           // calculator.net and "long division" pages, which only added noise the model then
           // tried to reconcile with its own working.
           if (canSearch && plan.query != null && !numericQ) {
+            planQueryUsed = plan.query
             researchWeb(answerId, topic, plan.query, numbered, found, if (knowledge.isNotBlank()) 1300 else 2100)
           } else ""
           }
@@ -875,6 +886,57 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
         // answer. It is kept for word problems, where the model has to build the set-up itself and
         // that set-up is what a small model gets wrong.
         var thinkNow = numericQ && prefs.thinking && !voice && planForCalc == null
+        // A study passage that IS the answer settles the question: do not also hand the model a pile of
+        // web text that may disagree. Measured: the pack said "উত্তর: যশোর" and was listed first, the
+        // web block was 3x longer, and the answer came back "ঝিনাইদহ… [4]". Instructions about which
+        // source wins are advisory; removing the loser is not.
+        if (bindingKey != null && webBlock.isNotBlank()) {
+          Log.i("ChatController", "adjudicated: study answer '${bindingKey.answer}' outranks ${webBlock.length} chars of web")
+          AgentTrace.note("ADJUDICATE", "study key '${bindingKey.answer}' binds; web text dropped (${webBlock.length}ch)")
+          webBlock = ""
+        }
+        // Second shot, only when the first one did not answer the question.
+        //
+        // Gated three ways so it is normally free: skipped when a study answer key already settles the
+        // question, skipped with no web block to judge, and skipped when the retrieved text is
+        // substantial. Only a thin block pays for the check, because that is the case where the
+        // sources did not actually answer and a refined query can help.
+        // Bounded to a single retry: a model round here is 16-27 s, so an open-ended loop would make
+        // the turn unusable.
+        if (bindingKey == null && canSearch && !numericQ && webBlock.isNotBlank()) {
+          // A separate sufficiency call cost 7.1 s measured (PLAN 17.4 s + SUFFICE 7.1 s = 24.5 s
+          // before the model wrote anything), which is worse than the wrong answers it prevents. The
+          // cheap version: only re-look when the answer is about to be short enough that nothing else
+          // can save it. A long, cited answer has already been built from the sources; a one-line one
+          // is where "the sources didn't have it" actually shows up.
+          val thin = webBlock.length < 900
+          if (thin) {
+            val again = runCatching {
+              gemma.oneShot(
+                "Question: ${(topic ?: asked).take(300)}\n\nPassages found:\n${webBlock.take(1200)}\n\n" +
+                  "Do these passages contain the ANSWER to the question? Reply YES or NO, one word.",
+                8,
+              )
+            }.getOrDefault("")
+            gemma.startChat(history(work.lines.dropLast(2)))
+            val enough = Regex("\\bYES\\b", RegexOption.IGNORE_CASE).containsMatchIn(again)
+            AgentTrace.note("SUFFICE", "${if (enough) "sources answer it" else "sources are thin"} '${again.take(12)}'")
+            if (!enough) {
+              val refined = planAnswer(topic ?: asked, canSearch, spoken = voice).query
+              if (refined != null && refined != planQueryUsed) {
+                status = "Looking again…"
+                val searchFor2: String = refined
+                val second = runCatching {
+                  researchWeb(answerId, topic ?: asked, searchFor2, numbered, found, 2100)
+                }.getOrDefault("")
+                if (second.isNotBlank()) {
+                  webBlock = second
+                  AgentTrace.note("RETRY", "second search '$refined'")
+                }
+              }
+            }
+          }
+        }
         // Reasoning streams into the work panel as it is produced, so the user can watch the
         // model think instead of staring at a spinner. Throttled: every piece would redraw the list.
         gemma.onThought = { piece -> if (voice) Unit else update(answerId) { it.copy(thought = gemma.lastThought.toString()) } }
