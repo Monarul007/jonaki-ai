@@ -57,7 +57,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
 
   // Timing, to compare with the PC (full loop ~15 s, interruption ~1 s).
   private var spokeEndAt = 0L
-  /** True once the real answer has started speaking, so the holding line is not said over it. */
+  /** True once the real answer has started speaking, so the acknowledgement is not repeated. */
   @Volatile private var spokeAnswer = false
 
   init {
@@ -77,20 +77,18 @@ class TalkController(private val context: Context, private val chat: ChatControl
       }
     }
     // Preparation (transcribe -> plan -> search -> first token) takes seconds before any answer text
-    // exists, and talk mode was silent for all of it. Acknowledge as soon as the turn is submitted —
-    // do NOT delay this with postDelayed.
+    // exists, and talk mode was silent for all of it. Acknowledge it here, but not with a spoken
+    // phrase — that played a canned sentence on every single turn, and "Let me check that" claims
+    // something is being verified when often nothing is. A short tone confirms the turn was received
+    // and says nothing it cannot back up.
     //
     // Measured: a 2000 ms postDelayed was delivered at 3470 ms after the last word, because the main
     // thread is busy with the model and a posted callback only runs when it next gets the looper. A
-    // delay here is therefore not a promise about wall-clock time. Firing immediately means the
-    // acknowledgement lands when it genuinely can — ~1.2 s after the last syllable (900 ms end-of-turn
-    // window + ASR) — and the real answer flushes it the moment it starts speaking.
+    // delay here is therefore not a promise about wall-clock time, so this fires immediately.
     chat.onPreparing = { _ ->
-      // `running` alone is the wrong test: while a spoken turn is being prepared, talk mode may still
-      // be waking the audio part, so `waking` counts too. Outside a talk session nothing is said.
       if ((running || waking) && !spokeAnswer) {
-        Log.i(TAG, "Holding line requested ${SystemClock.elapsedRealtime() - spokeEndAt} ms after last word")
-        speaker.hold(if (onHeadphones) "One moment." else "Let me check that.")
+        Log.i(TAG, "Heard; acknowledging ${SystemClock.elapsedRealtime() - spokeEndAt} ms after last word")
+        Earcon.heard()
       }
     }
     chat.onAnswerDone = { line ->
@@ -106,12 +104,6 @@ class TalkController(private val context: Context, private val chat: ChatControl
         if (st == State.THINKING) Log.i(TAG, "Timing: speech end -> first words spoken ${SystemClock.elapsedRealtime() - spokeEndAt} ms")
         moveTo(State.SPEAKING)
       }
-    }
-    // The acknowledgement is heard, then the answer takes a while to arrive. The screen must keep
-    // saying "thinking" in that gap: the holding line used to be reported as speech starting, so the
-    // UI said "Speaking" for the whole silent search with nothing coming out of the speaker.
-    speaker.onHold = {
-      if (running && st == State.THINKING) Log.i(TAG, "Acknowledged; still thinking")
     }
     speaker.onIdle = { if (running && (st == State.THINKING || st == State.SPEAKING) && !chat.busy) moveTo(State.LISTENING) }
   }

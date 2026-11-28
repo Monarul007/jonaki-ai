@@ -74,15 +74,6 @@ class Speaker(context: Context, private val prefs: Prefs) {
   var speaking by mutableStateOf(false); private set
   var onStart: (() -> Unit)? = null
   var onIdle: (() -> Unit)? = null
-  /**
-   * The acknowledgement started / stopped playing.
-   *
-   * Kept apart from [onStart] on purpose: the holding line is not the answer, so it must not make the
-   * screen say "Speaking". Talk mode keeps its own "thinking" state and only uses this to know that the
-   * one-off line has finished.
-   */
-  var onHold: (() -> Unit)? = null
-  var onHoldDone: (() -> Unit)? = null
 
   /** Which reply is being read (so its 🔊 button can show "stop"). */
   var readingId by mutableStateOf<Long?>(null); private set
@@ -97,33 +88,16 @@ class Speaker(context: Context, private val prefs: Prefs) {
           android.util.Log.i("Speaker", "First sound after ${android.os.SystemClock.elapsedRealtime() - firstAt} ms (asked ${used}, engine ${tts.voice?.name})")
           firstAt = 0
         }
-        // The holding line is deliberately NOT reported as speech starting. It is an acknowledgement
-        // played while the answer is still being prepared, so the screen must keep saying "thinking"
-        // — reporting it turned the UI to "Speaking" and left it there for the whole silent search,
-        // which read as the app claiming to talk with nothing coming out.
-        if (isHold(id)) {
-          android.util.Log.i("Speaker", "Holding line audible ${android.os.SystemClock.elapsedRealtime() - holdAt} ms after request (TTS start-up)")
-          android.os.Handler(android.os.Looper.getMainLooper()).post { onHold?.invoke() }
-          return
-        }
         android.os.Handler(android.os.Looper.getMainLooper()).post { onStart?.invoke() }
       }
-      override fun onDone(id: String?) = finished(id)
+      override fun onDone(id: String?) = finished()
       @Deprecated("Deprecated in Java")
-      override fun onError(id: String?) = finished(id)
-      override fun onStop(id: String?, interrupted: Boolean) = finished(id)
+      override fun onError(id: String?) = finished()
+      override fun onStop(id: String?, interrupted: Boolean) = finished()
     })
   }
 
-  private fun isHold(id: String?) = id != null && id.startsWith("hold")
-
-  private fun finished(id: String?) {
-    // A holding line is not part of the answer's queue: it never incremented `queued`, so decrementing
-    // for it here pushed the counter negative and could end an answer early.
-    if (isHold(id)) {
-      android.os.Handler(android.os.Looper.getMainLooper()).post { onHoldDone?.invoke() }
-      return
-    }
+  private fun finished() {
     if (queued.decrementAndGet() <= 0) {
       queued.set(0)
       android.os.Handler(android.os.Looper.getMainLooper()).post { checkIdle() }
@@ -183,10 +157,9 @@ class Speaker(context: Context, private val prefs: Prefs) {
     ended = false
     speaking = true
     readingId = id
-    // No warm-up speak() here on purpose. The holding line is already spoken before the answer
-    // begins, and that is what pays the engine's ~500 ms cold start. Queuing a silent utterance at
-    // this point would be *worse than nothing*: it is added to the same queue as the answer, so the
-    // first real sentence would wait behind it.
+    // No warm-up speak() here on purpose. The acknowledgement tone already wakes the audio path, and
+    // queuing a silent utterance would be *worse than nothing*: it joins the same queue as the answer,
+    // so the first real sentence would wait behind it.
   }
 
   /** Speak each finished sentence of [text] that has not been said yet. */
@@ -217,30 +190,6 @@ class Speaker(context: Context, private val prefs: Prefs) {
     spoken = upto
     if (chunk.isNotEmpty()) say(chunk)
   }
-
-  /**
-   * Say something while the real answer is still being prepared.
-   *
-   * Planning and searching a question takes seconds before the first token exists, and talk mode sat
-   * silent for all of it. A short holding line turns that silence into an acknowledgement. It is not
-   * a reply: it is spoken as a separate utterance and the real answer speaks over it when it starts,
-   * so it never delays anything and is never mistaken for an answer.
-   *
-   * The guard is `ready` ONLY — deliberately not `ended`. `ended` starts as true and is cleared by
-   * start(), which runs when the reply begins, so requiring `!ended` meant this returned immediately
-   * for the entire time it was needed and the holding line was never heard once. That is why the wait
-   * stayed silent no matter what threshold was tuned: the acknowledgement was never playing.
-   */
-  fun hold(text: String) {
-    if (!ready) return
-    // Recorded so onStart can report when it was actually heard, not merely requested.
-    holdAt = android.os.SystemClock.elapsedRealtime()
-    tts.setSpeechRate(prefs.speechRate)
-    tts.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), "hold${counter++}")
-  }
-
-  /** When the acknowledgement was requested, to compare with its audible start. */
-  @Volatile private var holdAt = 0L
 
   private var current: Voice? = null
   /** When the first piece of a reply was handed over (to measure how fast speech starts). */
