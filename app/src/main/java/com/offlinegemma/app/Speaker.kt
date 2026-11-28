@@ -17,14 +17,7 @@ fun speakable(text: String): String {
   val fences = Regex("```").findAll(s).count()
   if (fences % 2 == 1) s = s.substring(0, s.lastIndexOf("```")) // unfinished code block: stop there
   s = s.replace(Regex("```[\\s\\S]*?```"), " ")
-  // Sources are cited as bare [1], [2], [3] so the reader can match them to the list. Spoken aloud
-  // they become "one", "three" — a web answer came back with a [3] after almost every line, so the
-  // audio was a poem punctuated by numbers. A link [text](url) keeps its text; a citation is dropped.
-  s = s.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
-  // A citation is often a LIST, not one number: "[1, 2, 4, 5]", "[1, 2, 5]", "[4]". Matching a single
-  // number left those behind and the engine read them out as "one two four five". Bengali digits are
-  // used too, so they are in the class, and a range like [1-3] counts as a citation.
-  s = s.replace(Regex("\\[\\s*[\\d০-৯]+(?:\\s*[,،–—-]\\s*[\\d০-৯]+)*\\s*\\]"), "")
+  s = stripCitations(s)
   // Removing a citation leaves its punctuation stranded: "উৎপন্ন করে [1], ।" became "করে , ।",
   // which the engine reads as "comma full stop". Tidy what the removal exposes.
   s = s.replace(Regex("\\s+([,;.!?।])"), "$1")
@@ -35,6 +28,35 @@ fun speakable(text: String): String {
   s = s.replace(Tutor.FIG_INLINE, " ")
   s = s.replace(Regex("`([^`]*)`"), "$1")
   s = s.replace(Regex("(?m)^\\s*[#>|-]+\\s*"), "").replace(Regex("[*_~#|$\\\\]"), "")
+  return s
+}
+
+/**
+ * Remove source citations from text that is about to be spoken.
+ *
+ * Citations show up in several shapes and NOT always as a tidy digit list, which is why the earlier
+ * narrow patterns kept failing on the device:
+ *
+ *   [4]   [1, 2, 4, 5]   [10,11]   [1-3]   [১, ২]   [সূত্র 1]   [1][2]   【1】
+ *
+ * The rule: a bracket pair whose contents are only digits/dashes/commas/whitespace is a citation and
+ * goes, whatever the spacing. A bracket containing real words ("[দ্রষ্টব্য]") is left alone, because
+ * that is a note and reading it is correct.
+ */
+fun stripCitations(text: String): String {
+  var s = text
+  // A bracketed link keeps its text; handled first so [label](url) is not half-removed.
+  s = s.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
+  // Any bracket whose content is only citation characters.
+  s = s.replace(Regex("\\s*[\\[【(]\\s*[\\d০-৯]+(?:\\s*[,،–—·/\\\\-]\\s*[\\d০-৯]+)*\\s*[\\]】)]"), "")
+  // A bracket that merely NAMES a source ("[সূত্র 1]", "[source 2]") is also not worth reading aloud.
+  s = s.replace(Regex("\\s*[\\[【]\\s*(?:সূত্র|উৎস|source|ref|note)s?\\s*[\\d০-৯,\\s-]*[\\]】]", RegexOption.IGNORE_CASE), "")
+  // A citation split by the sentence/paragraph divider: the opener and its digits arrive in one piece
+  // and the closing bracket in the next, so nothing above can match. Caught here because this runs on
+  // every fragment. Everything from such an opener to the end is dropped, allowing a trailing
+  // separator — the fragment usually ends on the comma ("…দেশগুলো [1, 2,"), not on a digit.
+  s = s.replace(Regex("[\\[【]\\s*[\\d০-৯]+(?:\\s*[,،–—·/\\\\-]+\\s*[\\d০-৯]+)*\\s*[,،–—·/\\\\-]?\\s*$"), "")
+  s = s.replace(Regex("^\\s*[\\d০-৯]+(?:\\s*[,،–—·/\\\\-]+\\s*[\\d০-৯]+)*\\s*[\\]】]"), "")
   return s
 }
 
@@ -213,7 +235,16 @@ class Speaker(context: Context, private val prefs: Prefs) {
     if (!ready) return
     tts.setSpeechRate(prefs.speechRate)
     if (queued.get() == 0) firstAt = android.os.SystemClock.elapsedRealtime()
-    for (p in pieces(chunk, nothingPlaying = queued.get() == 0)) {
+    for (p0 in pieces(chunk, nothingPlaying = queued.get() == 0)) {
+      // Clean AGAIN, at the last moment before speaking, and skip anything left empty.
+      //
+      // This is what the narrow-pattern attempts kept missing. feed() cleans the whole answer, but
+      // pieces() then SPLITS that text — and a split can land inside or between citations, so the
+      // fragment reaching here no longer matches a pattern applied to the original. Splitting on
+      // punctuation also happens again for the "speak the first clause early" rule. Cleaning the
+      // final string, whatever it became, is the only place that cannot be bypassed.
+      val p = stripCitations(p0).replace(Regex("\\s{2,}"), " ").trim()
+      if (p.isEmpty()) continue
       val v = voiceFor(p)
       // setVoice() returns an error code and used to be called as a plain assignment, so a rejected
       // Bengali voice fell back to the engine default (en-US) silently — which is why Bengali text was

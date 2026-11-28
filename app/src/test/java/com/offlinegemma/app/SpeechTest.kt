@@ -68,6 +68,28 @@ class SpeechTest {
     assertTrue(speakable("এটি [দ্রষ্টব্য] একটি নোট।").contains("দ্রষ্টব্য"))
   }
 
+  @Test fun aSentenceThatNamesItsSourceIsNotReadOut() {
+    assertFalse(speakable("উত্তরটি পাঁচ [সূত্র 1]।").contains("সূত্র"))
+    assertFalse(speakable("উত্তরটি পাঁচ [source 2]।").contains("source"))
+  }
+
+  /**
+   * The reason every earlier fix looked right in a test and still failed on the device.
+   *
+   * feed() cleans the whole answer, then pieces() SPLITS it. A split can land right after a citation,
+   * or between two of them, so the text handed to the engine is a fragment that no longer matches a
+   * pattern written against the original sentence. These are the fragments that were being spoken.
+   */
+  @Test fun aSplitFragmentCarryingACitationIsStillCleaned() {
+    // What pieces() produces for: "দেশগুলো হলো [1, 2, 5]। চীন [4]।" — note the bracket left dangling.
+    for (frag in listOf("[1, 2, 5]", "চীন [4]", "দেশগুলো [1, 2,", "5]", "[4]।")) {
+      val spoken = stripCitations(frag).trim()
+      assertFalse("'$frag' still speaks a bracket: '$spoken'", spoken.contains("["))
+    }
+    // …and a fragment that is nothing but a citation becomes empty, so it is skipped entirely.
+    assertEquals("", stripCitations("[1, 2, 4, 5]").trim())
+  }
+
   /** A markdown link keeps its text; only the bare numeric citation is dropped. */
   @Test fun aLinkKeepsItsTextButABareCitationGoes() {
     assertEquals("সূত্র দেখুন", speakable("সূত্র [দেখুন](https://example.com)").trim())
