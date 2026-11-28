@@ -17,7 +17,11 @@ fun speakable(text: String): String {
   val fences = Regex("```").findAll(s).count()
   if (fences % 2 == 1) s = s.substring(0, s.lastIndexOf("```")) // unfinished code block: stop there
   s = s.replace(Regex("```[\\s\\S]*?```"), " ")
+  // Sources are cited as bare [1], [2], [3] so the reader can match them to the list. Spoken aloud
+  // they become "three" — a web answer came back with a [3] after almost every line, so the audio was
+  // a poem punctuated by the number three. A link [text](url) keeps its text; a bare number is dropped.
   s = s.replace(Regex("\\[([^\\]]+)\\]\\([^)]*\\)"), "$1")
+  s = s.replace(Regex("\\[\\s*\\d{1,3}\\s*\\]"), "")
   s = s.replace(Regex("https?://\\S+"), "")
   s = s.replace(Regex("""(?im)^\s*[*_]*\s*NEXT\s*[*_]*\s*:.*$"""), "")
   s = s.replace(Tutor.FIG_INLINE, " ")
