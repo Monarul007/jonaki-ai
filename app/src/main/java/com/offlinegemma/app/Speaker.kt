@@ -85,6 +85,12 @@ class Speaker(context: Context, private val prefs: Prefs) {
           android.util.Log.i("Speaker", "First sound after ${android.os.SystemClock.elapsedRealtime() - firstAt} ms (voice ${current?.name})")
           firstAt = 0
         }
+        // Proof the holding line was actually heard, as opposed to merely requested. Measured from the
+        // request, not from the end of speech: this is the TTS engine's own start-up latency (~500 ms),
+        // which the app cannot shorten. Label it for what it is.
+        if (id != null && id.startsWith("hold")) {
+          android.util.Log.i("Speaker", "Holding line audible ${android.os.SystemClock.elapsedRealtime() - holdAt} ms after request (TTS start-up)")
+        }
         android.os.Handler(android.os.Looper.getMainLooper()).post { onStart?.invoke() }
       }
       override fun onDone(id: String?) = finished()
@@ -166,16 +172,26 @@ class Speaker(context: Context, private val prefs: Prefs) {
   /**
    * Say something while the real answer is still being prepared.
    *
-   * Planning and searching a question takes ~11 s before the first token exists, and talk mode sat
+   * Planning and searching a question takes seconds before the first token exists, and talk mode sat
    * silent for all of it. A short holding line turns that silence into an acknowledgement. It is not
    * a reply: it is spoken as a separate utterance and the real answer speaks over it when it starts,
    * so it never delays anything and is never mistaken for an answer.
+   *
+   * The guard is `ready` ONLY — deliberately not `ended`. `ended` starts as true and is cleared by
+   * start(), which runs when the reply begins, so requiring `!ended` meant this returned immediately
+   * for the entire time it was needed and the holding line was never heard once. That is why the wait
+   * stayed silent no matter what threshold was tuned: the acknowledgement was never playing.
    */
   fun hold(text: String) {
-    if (!ready || ended) return
+    if (!ready) return
+    // Recorded so onStart can report when it was actually heard, not merely requested.
+    holdAt = android.os.SystemClock.elapsedRealtime()
     tts.setSpeechRate(prefs.speechRate)
     tts.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), "hold${counter++}")
   }
+
+  /** When the acknowledgement was requested, to compare with its audible start. */
+  @Volatile private var holdAt = 0L
 
   private var current: Voice? = null
   /** When the first piece of a reply was handed over (to measure how fast speech starts). */

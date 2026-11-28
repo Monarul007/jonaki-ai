@@ -36,7 +36,7 @@ class VoiceDetector(
     /** Speech started: begin recording. */
     data object Start : Event()
     /** The user finished a sentence: send this clip. */
-    data class Finish(val chunks: List<ShortArray>) : Event()
+    data class Finish(val chunks: List<ShortArray>, val lastLoudMs: Long = 0) : Event()
     /** Too short (a cough or a click): go back to listening. */
     data object Discard : Event()
     /** The user talked over the reply: stop speaking and record. */
@@ -88,7 +88,10 @@ class VoiceDetector(
         if (now - quietAt > endSilenceMs || now - startAt > 30_000) {
           val chunks = rec.toList()
           rec.clear()
-          if (voicedMs < 500) Event.Discard else Event.Finish(chunks)
+          // quietAt is the *last* frame that was loud, so this is the real end of speech — not the
+          // moment the window elapsed, which is endSilenceMs later. Anything timed "from the end of
+          // speech" has to use this or it silently includes the whole silence window.
+          if (voicedMs < 500) Event.Discard else Event.Finish(chunks, quietAt)
         } else Event.None
       }
       Mode.SPEAKING, Mode.THINKING -> {

@@ -89,7 +89,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
       // `running` alone is the wrong test: while a spoken turn is being prepared, talk mode may still
       // be waking the audio part, so `waking` counts too. Outside a talk session nothing is said.
       if ((running || waking) && !spokeAnswer) {
-        Log.i(TAG, "Holding line ${SystemClock.elapsedRealtime() - spokeEndAt} ms after speech ended")
+        Log.i(TAG, "Holding line requested ${SystemClock.elapsedRealtime() - spokeEndAt} ms after last word")
         speaker.hold(if (onHeadphones) "One moment." else "Let me check that.")
       }
     }
@@ -256,7 +256,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
     when (e) {
       VoiceDetector.Event.Start -> moveTo(State.RECORDING)
       VoiceDetector.Event.Discard -> moveTo(State.LISTENING)
-      is VoiceDetector.Event.Finish -> finishUtterance(e.chunks)
+      is VoiceDetector.Event.Finish -> finishUtterance(e.chunks, e.lastLoudMs)
       VoiceDetector.Event.BargeIn -> {
         // Only a tap on the orb may interrupt a reply; ignore speech picked up over it.
       }
@@ -264,9 +264,12 @@ class TalkController(private val context: Context, private val chat: ChatControl
     }
   }
 
-  private fun finishUtterance(chunks: List<ShortArray>) {
+  private fun finishUtterance(chunks: List<ShortArray>, lastLoudMs: Long) {
     moveTo(State.THINKING)
-    spokeEndAt = SystemClock.elapsedRealtime()
+    // The real end of speech, from the detector: the moment the last loud frame was heard, not the
+    // moment the end-of-turn window elapsed. Logging against the wrong reference made a 900 ms window
+    // look like part of the deliberate wait, and hid the fact that the acknowledgement never played.
+    spokeEndAt = lastLoudMs
     val wav = encodeWav(chunks)
     main.post {
       val dir = chat.store.filesDir(chat.chatId)
