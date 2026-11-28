@@ -107,6 +107,12 @@ class TalkController(private val context: Context, private val chat: ChatControl
         moveTo(State.SPEAKING)
       }
     }
+    // The acknowledgement is heard, then the answer takes a while to arrive. The screen must keep
+    // saying "thinking" in that gap: the holding line used to be reported as speech starting, so the
+    // UI said "Speaking" for the whole silent search with nothing coming out of the speaker.
+    speaker.onHold = {
+      if (running && st == State.THINKING) Log.i(TAG, "Acknowledged; still thinking")
+    }
     speaker.onIdle = { if (running && (st == State.THINKING || st == State.SPEAKING) && !chat.busy) moveTo(State.LISTENING) }
   }
 

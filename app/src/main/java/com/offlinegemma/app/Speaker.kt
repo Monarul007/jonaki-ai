@@ -74,6 +74,15 @@ class Speaker(context: Context, private val prefs: Prefs) {
   var speaking by mutableStateOf(false); private set
   var onStart: (() -> Unit)? = null
   var onIdle: (() -> Unit)? = null
+  /**
+   * The acknowledgement started / stopped playing.
+   *
+   * Kept apart from [onStart] on purpose: the holding line is not the answer, so it must not make the
+   * screen say "Speaking". Talk mode keeps its own "thinking" state and only uses this to know that the
+   * one-off line has finished.
+   */
+  var onHold: (() -> Unit)? = null
+  var onHoldDone: (() -> Unit)? = null
 
   /** Which reply is being read (so its 🔊 button can show "stop"). */
   var readingId by mutableStateOf<Long?>(null); private set
@@ -88,22 +97,33 @@ class Speaker(context: Context, private val prefs: Prefs) {
           android.util.Log.i("Speaker", "First sound after ${android.os.SystemClock.elapsedRealtime() - firstAt} ms (asked ${used}, engine ${tts.voice?.name})")
           firstAt = 0
         }
-        // Proof the holding line was actually heard, as opposed to merely requested. Measured from the
-        // request, not from the end of speech: this is the TTS engine's own start-up latency (~500 ms),
-        // which the app cannot shorten. Label it for what it is.
-        if (id != null && id.startsWith("hold")) {
+        // The holding line is deliberately NOT reported as speech starting. It is an acknowledgement
+        // played while the answer is still being prepared, so the screen must keep saying "thinking"
+        // — reporting it turned the UI to "Speaking" and left it there for the whole silent search,
+        // which read as the app claiming to talk with nothing coming out.
+        if (isHold(id)) {
           android.util.Log.i("Speaker", "Holding line audible ${android.os.SystemClock.elapsedRealtime() - holdAt} ms after request (TTS start-up)")
+          android.os.Handler(android.os.Looper.getMainLooper()).post { onHold?.invoke() }
+          return
         }
         android.os.Handler(android.os.Looper.getMainLooper()).post { onStart?.invoke() }
       }
-      override fun onDone(id: String?) = finished()
+      override fun onDone(id: String?) = finished(id)
       @Deprecated("Deprecated in Java")
-      override fun onError(id: String?) = finished()
-      override fun onStop(id: String?, interrupted: Boolean) = finished()
+      override fun onError(id: String?) = finished(id)
+      override fun onStop(id: String?, interrupted: Boolean) = finished(id)
     })
   }
 
-  private fun finished() {
+  private fun isHold(id: String?) = id != null && id.startsWith("hold")
+
+  private fun finished(id: String?) {
+    // A holding line is not part of the answer's queue: it never incremented `queued`, so decrementing
+    // for it here pushed the counter negative and could end an answer early.
+    if (isHold(id)) {
+      android.os.Handler(android.os.Looper.getMainLooper()).post { onHoldDone?.invoke() }
+      return
+    }
     if (queued.decrementAndGet() <= 0) {
       queued.set(0)
       android.os.Handler(android.os.Looper.getMainLooper()).post { checkIdle() }
