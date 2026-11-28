@@ -162,15 +162,24 @@ fun Answer(
         // A maths answer gets working, not commentary, so the label says what you will actually get.
         val maths = line.tools.any { it.name == "calculate" && it.ok == true } ||
           Tutor.looksNumeric(line.topic ?: line.display, null)
-        SmallAction(
-          Icons.Rounded.Lightbulb,
-          when {
-            line.explain.isNotBlank() -> "Explanation shown below"
-            maths -> "Show how this was worked out"
-            else -> "Explain this answer"
-          },
-          enabled = line.explain.isNotBlank() || (canAct && chat != null),
-        ) { chat?.explain(line.id) }
+        if (line.explaining) {
+          // Shown IN PLACE of the bulb, where the finger is: the call takes 10-20 s and without this
+          // the tap looked ignored — no spinner, no change, no way to tell it had started.
+          Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
+            CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp, color = Brand.Teal)
+          }
+        } else {
+          SmallAction(
+            Icons.Rounded.Lightbulb,
+            when {
+              line.explain.isNotBlank() -> "Explanation shown below"
+              maths -> "Show how this was worked out"
+              else -> "Explain this answer"
+            },
+            enabled = line.explain.isNotBlank() || (canAct && chat != null),
+            tint = if (line.explain.isNotBlank()) Brand.Teal else null,
+          ) { chat?.explain(line.id) }
+        }
         // Rating: the only record of which answers were actually wrong, so they can be reviewed later.
         SmallAction(
           Icons.Rounded.ThumbUp,

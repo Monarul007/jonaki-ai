@@ -2130,10 +2130,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
    * of the explanation worth trusting — a model with no way to decline will always invent something.
    */
   fun explain(answerId: Long) {
-    if (!canSend()) return
     val i = indexOf(answerId, shown)
     val line = lines.getOrNull(i) ?: return
-    if (line.explain.isNotBlank()) return          // already explained: the text is kept
+    if (line.explain.isNotBlank() || line.explaining) return   // already done or already running
+    // Deliberately NOT gated on canSend(): that requires !busy, and this method sets busy. Gating on it
+    // meant the first explanation blocked every other one — a tap that produced no spinner, no error
+    // and no result, which is exactly what "I don't know if it is working" looks like.
+    if (!ready || running != null) {
+      notice("⏳ Just a moment — still finishing the last one.")
+      return
+    }
     val question = (line.topic ?: lines.subList(0, i.coerceAtLeast(0))
       .lastOrNull { it.who == Who.USER }?.display).orEmpty()
     if (question.isBlank() || line.text.isBlank()) return
@@ -2168,6 +2174,9 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
     }
     busy = true
     status = "Explaining…"
+    // The flag the BUTTON reads. The global `status` above drives the screen header, which is too far
+    // from the bulb to answer "did my tap land?" — the reader is looking at the icon they pressed.
+    update(answerId, shown) { it.copy(explaining = true) }
     scope.launch {
       // try/finally, not straight-line cleanup.
       //
@@ -2212,14 +2221,17 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           if (bengali) "দুঃখিত, আমি এই উত্তরটি সহজভাবে ব্যাখ্যা করতে পারছি না।"
           else "Sorry — I can't explain this answer simply and correctly."
         } else Markdown.inline(cleaned)
-        update(answerId, shown) { it.copy(explain = text) }
+        update(answerId, shown) { it.copy(explain = text, explaining = false) }
         save(shown)
         Log.i("ChatController", "explained answer $answerId: ${if (text.startsWith("দুঃখিত") || text.startsWith("Sorry")) "declined" else "${text.length} chars"}")
       } catch (t: Throwable) {
         Log.w("ChatController", "explain failed for answer $answerId", t)
+        update(answerId, shown) { it.copy(explaining = false) }
       } finally {
         busy = false
         status = null
+        // Belt and braces: if the update above was skipped for any reason, the spinner must still stop.
+        update(answerId, shown) { if (it.explaining) it.copy(explaining = false) else it }
       }
     }
   }

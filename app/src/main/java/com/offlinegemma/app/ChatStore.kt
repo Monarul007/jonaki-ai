@@ -75,6 +75,15 @@ data class ChatLine(
    * regenerated (and re-paid for) on every scroll, and so a bad explanation can be reviewed later.
    */
   val explain: String = "",
+  /**
+   * True while this answer's explanation is being written.
+   *
+   * The call takes 10-20 s on this phone, and without a per-line flag the button looked dead: no
+   * spinner, no change, nothing to tell the reader their tap had been received. Deliberately a field
+   * on the line rather than the global `status`, because that is shared with the answer itself and an
+   * explanation must not look like a new question being asked.
+   */
+  val explaining: Boolean = false,
 )
 
 /**

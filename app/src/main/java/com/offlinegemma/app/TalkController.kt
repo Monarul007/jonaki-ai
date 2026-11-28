@@ -165,6 +165,11 @@ class TalkController(private val context: Context, private val chat: ChatControl
     answerLine?.let { chat.rate(it.id, r) }
   }
 
+  /** Explain the answer just spoken, from the voice screen. */
+  fun explainCurrent() {
+    answerLine?.let { chat.explain(it.id) }
+  }
+
   /** Whether the sound is coming out of headphones (no loudspeaker echo)? */
   private fun headphones(): Boolean {
     val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager

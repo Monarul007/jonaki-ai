@@ -36,6 +36,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.Lightbulb
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.ThumbDown
 import androidx.compose.material.icons.rounded.ThumbUp
@@ -291,6 +292,12 @@ private fun ReplyCard(talk: TalkController, modifier: Modifier) {
               style = MaterialTheme.typography.bodyLarge,
               color = Color.White.copy(alpha = if (talk.transcript.isBlank()) 0.45f else 0.86f),
             )
+            // The explanation, once asked for. Shown in the card because voice has no other panel:
+            // the answer above stays the headline and this reads as the working underneath it.
+            talk.answerLine?.takeIf { it.explain.isNotBlank() }?.let { line ->
+              Spacer(Modifier.height(12.dp))
+              ExplanationCard(line.explain)
+            }
           }
         }
       }
@@ -298,8 +305,36 @@ private fun ReplyCard(talk: TalkController, modifier: Modifier) {
       // through ASR), and this is the only way to mark one — the same verdict the chat screen stores.
       // Placed AFTER the text, where it belongs: a verdict on a reply cannot come before the reply.
       talk.answerLine?.let { line ->
-        if (line.rating != null || talk.state != TalkController.State.THINKING) {
+        if (talk.state != TalkController.State.THINKING || line.rating != null) {
           Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+            // Explain, same as the chat screen: why this answer is right, or how a sum was worked
+            // out. Voice needs it more than chat does — a spoken answer cannot be re-read, so the
+            // reasoning has nowhere else to appear.
+            val maths = line.tools.any { it.name == "calculate" && it.ok == true } ||
+              Tutor.looksNumeric(line.topic ?: line.display, null)
+            if (line.explaining) {
+              // Spinner in place of the bulb: this call is 10-20 s, and the tap looked ignored.
+              Box(Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp, color = Brand.Teal)
+              }
+            } else {
+              IconButton(
+                onClick = { talk.explainCurrent() },
+                modifier = Modifier.size(40.dp),
+                enabled = line.explain.isBlank() && talk.state != TalkController.State.THINKING,
+              ) {
+                Icon(
+                  Icons.Rounded.Lightbulb,
+                  when {
+                    line.explain.isNotBlank() -> "Explanation shown below"
+                    maths -> "Show how this was worked out"
+                    else -> "Explain this answer"
+                  },
+                  Modifier.size(17.dp),
+                  tint = if (line.explain.isNotBlank()) Brand.Teal else Color.White.copy(alpha = 0.45f),
+                )
+              }
+            }
             IconButton(
               onClick = { talk.rateCurrent(Rating.UP) },
               modifier = Modifier.size(40.dp),
@@ -324,6 +359,43 @@ private fun ReplyCard(talk: TalkController, modifier: Modifier) {
           }
         }
       }
+    }
+  }
+}
+
+/**
+ * The explanation behind a spoken answer, inside the reply card.
+ *
+ * Voice has no separate panel, and a spoken answer cannot be re-read, so this is the only place the
+ * reasoning can live. Quiet and slightly inset so the answer above stays the headline.
+ *
+ * The heading differs for maths: a worked derivation ("STEPS:") is not the same thing as a "why",
+ * and labelling working as commentary was already wrong once on the chat screen.
+ */
+@Composable
+private fun ExplanationCard(text: String) {
+  val working = Regex("(?m)^\\s*STEPS\\s*:").containsMatchIn(text)
+  Surface(
+    shape = RoundedCornerShape(12.dp),
+    color = Color.White.copy(alpha = 0.05f),
+    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+    modifier = Modifier.fillMaxWidth(),
+  ) {
+    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Rounded.Lightbulb, null, Modifier.size(13.dp), tint = Brand.Teal)
+        Spacer(Modifier.width(6.dp))
+        Text(
+          if (working) "How it was worked out" else "Why this answer",
+          style = MaterialTheme.typography.labelSmall,
+          color = Brand.Teal.copy(alpha = 0.9f),
+        )
+      }
+      Text(
+        text.trim(),
+        style = MaterialTheme.typography.bodySmall,
+        color = Color.White.copy(alpha = 0.8f),
+      )
     }
   }
 }
