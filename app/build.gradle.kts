@@ -38,6 +38,13 @@ android {
 
     buildTypes {
         debug {
+            // The sherpa-onnx AAR ships four ABIs (about 190 MB). Debug keeps arm64 for the phone and
+            // x86_64 for the emulator; without a filter the APK was 337 MB. Set per build type, because
+            // a second `defaultConfig { }` block is silently ignored by AGP.
+            ndk {
+                abiFilters.clear()
+                abiFilters.addAll(listOf("arm64-v8a", "x86_64"))
+            }
             if (project.hasProperty("overRelease")) {
                 // `-PoverRelease`: a test build that installs over the real app and keeps its data
                 // (the downloaded model, chats). Same id and signing key as the release build.
@@ -54,7 +61,12 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.findByName("release")
             // Real phones are 64-bit ARM; the x86_64 engine is only for the computer's emulator.
-            ndk { abiFilters += "arm64-v8a" }
+            // ASSIGN, not `+=`: appending would keep whatever an earlier block added, which is how
+            // 46 MB of emulator libraries got into a release APK (measured: 175.6 MB, not 129).
+            ndk {
+                abiFilters.clear()
+                abiFilters.add("arm64-v8a")
+            }
         }
     }
     compileOptions {
@@ -66,13 +78,6 @@ android {
         buildConfig = true
     }
     testOptions { unitTests.isReturnDefaultValues = true }
-    // Real phones are 64-bit ARM. The sherpa-onnx AAR ships four ABIs (about 190 MB of them), so
-    // leaving every ABI in a debug build made the APK 337 MB for no benefit: the emulator is the only
-    // thing that needs x86_64, and it is already covered by keeping both arm64 and x86_64 builds
-    // available through the release filter below.
-    defaultConfig {
-        ndk { abiFilters += setOf("arm64-v8a", "x86_64") }
-    }
     packaging {
         jniLibs { pickFirsts.add("**/liblitertlm_jni.so") }
         // Post-quantum crypto tables pulled in by the PDF reader's encryption support; never used here.
