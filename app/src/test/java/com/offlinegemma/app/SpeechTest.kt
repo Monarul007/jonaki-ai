@@ -68,6 +68,21 @@ class SpeechTest {
     assertTrue(speakable("এটি [দ্রষ্টব্য] একটি নোট।").contains("দ্রষ্টব্য"))
   }
 
+  /**
+   * Measured on the device: a ratio question answered "…হলো ১৫ : ২১ : ৯১।" — correct — then appended
+   * "এই বিষয়ে আরও তথ্য জানতে আপনি নিম্নলিখিত সূত্রপাতটি দেখতে পারেন:" and a 200-character encoded URL.
+   * Decode was 34.8 s for 124 tokens, most of it that tail, and the URL is unlistenable.
+   */
+  @Test fun aTrailingSourceOfferIsNotReadAloud() {
+    val answer = "অনুপাতগুলোর ধারাবাহিক অনুপাত হলো ১৫ : ২১ : ৯১। " +
+      "এই বিষয়ে আরও তথ্য জানতে আপনি নিম্নলিখিত সূত্রপাতটি দেখতে পারেন: " +
+      "বহুরাশিক অনুপাত — https://sattacademy.com/guide/%E0%A6%AC%E0%A6%B9%E0%A7%81"
+    val said = speakable(answer)
+    assertFalse("the URL must go", said.contains("http"))
+    assertFalse("the encoded mush must go", said.contains("%E0"))
+    assertTrue("the answer survives", said.contains("১৫ : ২১ : ৯১"))
+  }
+
   @Test fun aSentenceThatNamesItsSourceIsNotReadOut() {
     assertFalse(speakable("উত্তরটি পাঁচ [সূত্র 1]।").contains("সূত্র"))
     assertFalse(speakable("উত্তরটি পাঁচ [source 2]।").contains("source"))

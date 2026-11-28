@@ -175,6 +175,12 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
   /** The reasoning of the current answer, when thinking is on. Never shown as answer text. */
   val lastThought = StringBuilder()
 
+  /**
+   * "prefill=…ms decode=…ms" for the most recent round, so a slow answer can be attributed instead of
+   * guessed at. Prefill grows with the prompt; decode grows with the reply.
+   */
+  @Volatile var lastRoundTiming: String = ""
+
   /** Called with reasoning pieces as they arrive, for an optional "Thinking…" indicator. */
   var onThought: ((String) -> Unit)? = null
 
@@ -195,6 +201,14 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
     lastThought.clear()
     val filter = if (think) ReasoningFilter() else null
     var visible = 0
+    // Where the wall time in a round actually goes. Until now "model=17 s" was one number, so the
+    // only way to argue about it was arithmetic on log timestamps — and prefill versus decode is the
+    // whole question: prefill scales with the PROMPT (which we control), decode with the ANSWER
+    // (which we mostly do not). Time to first token is the prefill + setup cost; everything after it
+    // is decode, and dividing by the pieces gives tok/s.
+    val startedAt = System.currentTimeMillis()
+    var firstTokenAt = 0L
+    val promptChars = text.length
     // Thinking is switched per message, so the conversation does not have to be rebuilt (and its
     // whole history re-read) just to reason about one question.
     return chat.sendMessageAsync(
@@ -212,6 +226,7 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
       // Feeding only the body lost every thinking answer, because the marker never appears there.
       // The channel text is fed first, in order, so the marker is seen and the answer is released.
       .map { msg ->
+        if (firstTokenAt == 0L) firstTokenAt = System.currentTimeMillis()
         val thought = if (think) msg.channels[THOUGHT_CHANNEL].orEmpty() else ""
         if (thought.isNotBlank()) {
           // The work panel shows the reasoning only, not the answer that follows the marker.
@@ -230,6 +245,21 @@ class GemmaEngine(private val context: Context, private val prefs: Prefs) {
       // Diagnostic: raw = characters received, visible = what reached the answer. A thinking turn
       // with visible = 0 is the empty-bubble bug; body/tail show where the answer really was.
       .onCompletion {
+        val doneAt = System.currentTimeMillis()
+        val ttft = if (firstTokenAt > 0) firstTokenAt - startedAt else -1L
+        val decodeMs = if (firstTokenAt > 0) doneAt - firstTokenAt else -1L
+        // Prefill (scales with the prompt we build) versus decode (scales with the answer).
+        // A rough 4 chars/token is enough to tell which one dominates; the point is the split, not
+        // an exact token count.
+        val approxTokens = visible / 4
+        val tps = if (decodeMs > 0) "%.1f".format(approxTokens * 1000.0 / decodeMs) else "-"
+        Log.i(
+          TAG,
+          "round: prefill=${ttft}ms decode=${decodeMs}ms ~${approxTokens}tok ${tps}tok/s " +
+            "prompt=${promptChars}ch answer=${visible}ch think=$think",
+        )
+        lastRoundTiming =
+          "prefill=${ttft}ms decode=${decodeMs}ms ${tps}tok/s prompt=${promptChars}ch answer=${visible}ch"
         if (think) Log.i(TAG, "reply: raw=${filter?.raw ?: 0} visible=$visible thought=${lastThought.length}" +
           if (visible == 0 && filter != null) " body=<${filter.held().take(160)}> tail=<${lastThought.takeLast(160)}>" else "")
       }

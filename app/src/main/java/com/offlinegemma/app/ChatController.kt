@@ -1031,6 +1031,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             append("something, say so in one short sentence and answer that part from your own knowledge. ")
             append("Never invent a source or a number. Do not add a list of sources or links at the end: ")
             append("the app shows them under your answer.]")
+            // Measured: the model answered the ratio question correctly in 12 characters and then kept
+            // going for another 489 — "আরও তথ্য জানতে আপনি নিম্নলিখিত সূত্রপাতটি দেখতে পারেন:" plus a
+            // 200-character percent-encoded URL. Decode cost 34.8 s for that answer. The old wording
+            // said not to add a list of links; it did not say to stop, so it filled the space instead.
+            append("\n\n[Stop as soon as the question is answered. Give the answer in one or two short ")
+            append("sentences. Do not offer further reading, do not name a website, and do not write a ")
+            append("URL: the app already lists the sources.]")
           }
           if (numericQ) {
             // A number with no work behind it cannot be checked, and a small model's number is
@@ -1144,7 +1151,16 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
             // full derivation for a one-option question: the NTRCA run took 409 s and 331 s on two
             // of them, at the ceiling of 2048 tokens. The question and options are already in the
             // prompt, so a tighter ceiling costs nothing but the rambling.
-            val cap = if (choices) CHOICE_MAX_OUTPUT else null
+            val cap = when {
+              choices -> CHOICE_MAX_OUTPUT
+              // A study answer key that binds means the answer is a phrase — the measured case was 12
+              // characters ("…হলো ১৫ : ২১ : ৯১।") and the model spent another 489 characters on
+              // further-reading prose, at 3.6 tok/s. Capping the FIRST round (not a rewrite) stops the
+              // rambling at the source instead of trimming it afterwards; 200 tokens is ~4x the
+              // longest real answer seen from a bound key.
+              bindingKey != null && !rewriting -> ANSWER_KEY_MAX_OUTPUT
+              else -> null
+            }
             roundStart = System.currentTimeMillis()
             AgentTrace.round(turn + 1, prompt, 0)
             val flow = gemma.send(prompt, if (first) images else emptyList(), if (first) audio else emptyList(), think = thinkNow, maxTokens = cap)
@@ -1178,6 +1194,7 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
           }
           first = false
           AgentTrace.reply(turn + 1, out, gemma.lastThought.toString(), System.currentTimeMillis() - roundStart)
+          AgentTrace.note("  " + "split", gemma.lastRoundTiming)
           // A silent or noisy clip gets one plain answer and nothing else: there are no words to
           // search or rewrite. A clip whose words *were* understood is an ordinary question now, so
           // it goes through the same sources/rewrite path as a typed one.
@@ -2250,6 +2267,13 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
      * the model wrote a page of working for a question that only needed a choice.
      */
     const val CHOICE_MAX_OUTPUT = 512
+
+    /**
+     * Output ceiling when a study answer key binds the question: the answer is a phrase, so anything
+     * past this is preamble or further-reading prose. Decode here runs at ~3.6 tok/s, so 200 tokens is
+     * still ~55 s of worst case and normally the answer finishes in a tenth of it.
+     */
+    const val ANSWER_KEY_MAX_OUTPUT = 200
     const val IMAGE_TOKENS = 280 // Gemma's vision budget per picture (same as agent.py)
     const val AUDIO_TOKENS_PER_SEC = 25
     /** Reference passages per answer, and how much of each to include. */
