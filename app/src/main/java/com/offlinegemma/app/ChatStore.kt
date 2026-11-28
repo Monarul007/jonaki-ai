@@ -65,7 +65,23 @@ data class ChatLine(
    * collapsed work panel, never as part of the answer.
    */
   val thought: String = "",
+  /**
+   * The user's verdict, so wrong answers can be found later and traced back to their cause.
+   * null = not rated. Stored per response, for voice replies too — the same signals are wanted there.
+   */
+  val rating: Rating? = null,
+  /**
+   * The on-demand explanation of this answer, when the user tapped Explain. Kept so it is not
+   * regenerated (and re-paid for) on every scroll, and so a bad explanation can be reviewed later.
+   */
+  val explain: String = "",
 )
+
+/**
+ * Thumbs up / down on a single response. Deliberately just two values: the point is to find the
+ * answers that are wrong, not to collect a five-star scale nobody uses consistently.
+ */
+enum class Rating { UP, DOWN }
 
 data class ChatSummary(val id: String, val title: String, val updated: Long)
 
@@ -142,6 +158,8 @@ class ChatStore(context: Context) {
     l.error?.let { put("err", it) }
     l.runOutput?.let { put("run", it) }
     if (l.thought.isNotBlank()) put("thought", l.thought.take(6000))
+    l.rating?.let { put("rating", it.name) }
+    if (l.explain.isNotBlank()) put("explain", l.explain.take(6000))
   }
 
   private fun lineFrom(o: JSONObject): ChatLine {
@@ -166,6 +184,10 @@ class ChatStore(context: Context) {
       error = o.optString("err").ifEmpty { null },
       runOutput = o.optString("run").ifEmpty { null },
       thought = o.optString("thought"),
+      rating = o.optString("rating").let { v ->
+        runCatching { Rating.valueOf(v) }.getOrNull()
+      },
+      explain = o.optString("explain"),
     )
   }
 }

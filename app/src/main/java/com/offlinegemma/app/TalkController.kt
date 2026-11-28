@@ -52,6 +52,14 @@ class TalkController(private val context: Context, private val chat: ChatControl
   var steps by mutableStateOf<List<ToolUse>>(emptyList()); private set
   /** The current one-line activity ("Searching the web…"), for the same card. */
   var doing by mutableStateOf<String?>(null); private set
+  /**
+   * The answer just spoken, so it can be rated from the voice screen.
+   *
+   * Voice replies are the ones most likely to be wrong — the question arrived through ASR, so a
+   * misheard word can send the whole answer off — and until now there was no way to mark one. Holding
+   * the id here lets the same thumbs the chat screen uses apply to what was just heard.
+   */
+  var answerLine by mutableStateOf<ChatLine?>(null); private set
 
   private val main = Handler(Looper.getMainLooper())
   @Volatile private var running = false
@@ -105,6 +113,7 @@ class TalkController(private val context: Context, private val chat: ChatControl
           val live = chat.lines.lastOrNull { it.who == Who.MODEL && !it.done }
           steps = live?.tools.orEmpty()
           doing = chat.status
+          answerLine = chat.lines.lastOrNull { it.who == Who.MODEL && it.done && it.text.isNotBlank() }
         }
         main.postDelayed(this, 250)
       }
@@ -151,7 +160,12 @@ class TalkController(private val context: Context, private val chat: ChatControl
     if (Looper.myLooper() == Looper.getMainLooper()) state = s else main.post { state = s }
   }
 
-  /** Is the sound coming out of headphones (no loudspeaker echo)? */
+  /** Rate the answer just spoken, from the voice screen. */
+  fun rateCurrent(r: Rating) {
+    answerLine?.let { chat.rate(it.id, r) }
+  }
+
+  /** Whether the sound is coming out of headphones (no loudspeaker echo)? */
   private fun headphones(): Boolean {
     val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     return am.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any {

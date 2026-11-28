@@ -47,6 +47,9 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Language
+import androidx.compose.material.icons.rounded.Lightbulb
+import androidx.compose.material.icons.rounded.ThumbDown
+import androidx.compose.material.icons.rounded.ThumbUp
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.StopCircle
 import androidx.compose.material3.AssistChip
@@ -153,6 +156,27 @@ fun Answer(
           if (reading) Icons.Rounded.StopCircle else Icons.AutoMirrored.Rounded.VolumeUp,
           if (reading) "Stop reading" else "Read aloud",
         ) { speaker.readAloud(line.id, line.text) }
+        // Explain: why this answer is right and the idea behind it. On demand, because it is a whole
+        // model round-trip and most answers do not need one. Once asked, the text is kept on the line
+        // and simply shown, so tapping again costs nothing.
+        SmallAction(
+          Icons.Rounded.Lightbulb,
+          if (line.explain.isBlank()) "Explain this answer" else "Explanation shown below",
+          enabled = line.explain.isNotBlank() || (canAct && chat != null),
+        ) { chat?.explain(line.id) }
+        // Rating: the only record of which answers were actually wrong, so they can be reviewed later.
+        SmallAction(
+          Icons.Rounded.ThumbUp,
+          "This answer was helpful",
+          enabled = chat != null,
+          tint = if (line.rating == Rating.UP) Brand.Teal else null,
+        ) { chat?.rate(line.id, Rating.UP) }
+        SmallAction(
+          Icons.Rounded.ThumbDown,
+          "This answer needs improvement",
+          enabled = chat != null,
+          tint = if (line.rating == Rating.DOWN) MaterialTheme.colorScheme.error else null,
+        ) { chat?.rate(line.id, Rating.DOWN) }
         line.seconds?.let { secs ->
           Text(
             "%.1fs · %d words".format(secs, line.text.trim().split(Regex("\\s+")).count { it.isNotEmpty() }),
@@ -162,6 +186,8 @@ fun Answer(
           )
         }
       }
+      // The explanation, once asked for: kept in the line so it survives a reload.
+      if (line.explain.isNotBlank()) ExplainPanel(line.explain)
     }
     // Follow-ups: only on the newest reply, after it finished, in one sideways-scrolling row.
     androidx.compose.animation.AnimatedVisibility(
@@ -279,10 +305,54 @@ private fun Shimmer(label: String = "Thinking…") {
   }
 }
 
+/**
+ * The explanation behind an answer: why it is right, the rule that makes it right, and the idea
+ * underneath. Sits inside a quiet box so it reads as commentary on the answer, not more answer.
+ *
+ * The model is allowed to decline (see ChatController.explain) — "sorry, I can't explain this simply"
+ * is a legitimate outcome and is shown as-is, rather than a plausible-sounding invention.
+ */
 @Composable
-private fun SmallAction(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+private fun ExplainPanel(text: String) {
+  Surface(
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+    shape = RoundedCornerShape(12.dp),
+    modifier = Modifier.fillMaxWidth(),
+  ) {
+    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(Icons.Rounded.Lightbulb, null, Modifier.size(15.dp), tint = Brand.Teal)
+        Spacer(Modifier.width(6.dp))
+        Text(
+          "Why this answer",
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+      Text(
+        text.trim(),
+        style = MaterialTheme.typography.bodyMedium,
+        color = MaterialTheme.colorScheme.onSurface,
+      )
+    }
+  }
+}
+
+@Composable
+private fun SmallAction(
+  icon: androidx.compose.ui.graphics.vector.ImageVector,
+  label: String,
+  enabled: Boolean = true,
+  tint: androidx.compose.ui.graphics.Color? = null,
+  onClick: () -> Unit,
+) {
   IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(48.dp)) {
-    Icon(icon, label, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    Icon(
+      icon, label, Modifier.size(19.dp),
+      // A rated thumb is tinted, so the chosen verdict is visible at a glance — the same cue a video
+      // site gives when you have already voted.
+      tint = tint ?: MaterialTheme.colorScheme.onSurfaceVariant,
+    )
   }
 }
 

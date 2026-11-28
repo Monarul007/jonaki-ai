@@ -2106,6 +2106,116 @@ class ChatController(private val app: Application, val gemma: GemmaEngine, val s
 
   // ---------- tutor ----------
 
+  /**
+   * Record the user's verdict on a response. Tapping the same one again clears it, like a video site.
+   *
+   * Persisted with the chat so the answers people marked wrong can be found later and traced back to
+   * their cause — which is the whole point; a rating nobody can review is just a gesture.
+   */
+  fun rate(answerId: Long, r: Rating) {
+    val line = lineOf(answerId, shown) ?: return
+    val next = if (line.rating == r) null else r
+    update(answerId, shown) { it.copy(rating = next) }
+    save(shown)
+    Log.i("ChatController", "rating: answer $answerId -> ${next ?: "cleared"}")
+  }
+
+  /**
+   * Explain the answer on demand: why it is right, and the concept behind it.
+   *
+   * Written to be provable rather than impressive. The prompt demands a short structure (the answer,
+   * the reason in one line, then the idea), forbids inventing a reason the sources do not support, and
+   * gives the model an explicit way out: if it cannot explain it simply and correctly, it must say so
+   * and apologise instead of producing something plausible. That escape hatch is what makes the rest
+   * of the explanation worth trusting — a model with no way to decline will always invent something.
+   */
+  fun explain(answerId: Long) {
+    if (!canSend()) return
+    val i = indexOf(answerId, shown)
+    val line = lines.getOrNull(i) ?: return
+    if (line.explain.isNotBlank()) return          // already explained: the text is kept
+    val question = (line.topic ?: lines.subList(0, i.coerceAtLeast(0))
+      .lastOrNull { it.who == Who.USER }?.display).orEmpty()
+    if (question.isBlank() || line.text.isBlank()) return
+    val bengali = prefs.answerBengali || line.text.any { it in '\u0980'..'\u09FF' }
+    val evidence = buildString {
+      if (line.tools.any { it.name == "knowledge" }) {
+        append("\nStudy-file passages were used for this answer:\n")
+        line.tools.filter { it.name == "knowledge" }.take(2).forEach { append(it.result.take(700)).append("\n") }
+      }
+      if (line.sources.isNotEmpty()) {
+        append("\nSources used: ")
+        append(line.sources.take(3).joinToString("; ") { it.title })
+        append("\n")
+      }
+    }
+    busy = true
+    status = "Explaining…"
+    scope.launch {
+      val ask = buildString {
+        append("My question: ${question.take(300)}\n\n")
+        append("My answer: ${line.text.take(700)}\n")
+        if (evidence.isNotBlank()) append(evidence)
+        append("\nExplain this answer to me. Use exactly this shape, nothing else:\n")
+        append("ANSWER: why the answer is correct, in one sentence.\n")
+        append("REASON: the step or rule that makes it correct, in one sentence.\n")
+        append("CONCEPT: the idea behind it, in one or two sentences a beginner could follow.\n")
+        if (bengali) append("Write in Bengali, in simple words.\n")
+        append("Only use reasons the passages above support. If you cannot explain it simply and ")
+        append("correctly, reply with this one line instead: CANNOT_EXPLAIN")
+      }
+      val out = runCatching { gemma.oneShot(ask, 320) }.getOrDefault("")
+      // oneShot closes the conversation; restore it or the next answer runs on a closed one.
+      gemma.startChat(history(lines.dropLast(0)))
+      busy = false
+      status = null
+      val cleaned = out.trim()
+      val text = if (cleaned.isBlank() || cleaned.contains("CANNOT_EXPLAIN", ignoreCase = true)) {
+        if (bengali) "দুঃখিত, আমি এই উত্তরটি সহজভাবে ব্যাখ্যা করতে পারছি না।"
+        else "Sorry — I can't explain this answer simply and correctly."
+      } else cleaned
+      update(answerId, shown) { it.copy(explain = text) }
+      save(shown)
+      Log.i("ChatController", "explained answer $answerId: ${if (text.startsWith("দুঃখিত") || text.startsWith("Sorry")) "declined" else "${text.length} chars"}")
+    }
+  }
+
+  /**
+   * Writes every rated answer to a file, so the dislikes can actually be reviewed.
+   *
+   * Collecting thumbs without a way to read them back would be pointless — the reason for the feature
+   * is finding which answers are wrong and why. One line per rated response: the verdict, the
+   * question, the answer, the tool steps, and any explanation given. Plain text on purpose: it can be
+   * read in a text editor or pulled off the phone without a parser.
+   */
+  fun exportFeedback(): String {
+    val out = java.io.File(app.filesDir, "feedback.txt")
+    val rated = mutableListOf<Pair<ChatSummary, ChatLine>>()
+    for (summary in store.list()) {
+      val loaded = store.load(summary.id) ?: continue
+      loaded.second.filter { it.who == Who.MODEL && it.rating != null }
+        .forEach { rated.add(summary to it) }
+    }
+    out.writeText(buildString {
+      append("# Jonaki AI — rated answers\n")
+      append("# ${rated.size} rated response(s)\n\n")
+      for ((summary, line) in rated) {
+        append("## ${line.rating}  ·  ${summary.title}\n")
+        append("answer id: ${line.id}\n")
+        append("question: ${(line.topic ?: "").replace("\n", " ")}\n")
+        append("answer:   ${line.text.replace("\n", " ")}\n")
+        if (line.tools.isNotEmpty()) {
+          append("steps:    ${line.tools.joinToString(" · ") { "${it.name}(${it.ok?.let { ok -> if (ok) "ok" else "failed" } ?: "?"})" }}\n")
+        }
+        if (line.sources.isNotEmpty()) append("sources:  ${line.sources.joinToString("; ") { it.title }}\n")
+        if (line.explain.isNotBlank()) append("explain:  ${line.explain.replace("\n", " ").take(600)}\n")
+        append("\n")
+      }
+    })
+    Log.i("ChatController", "feedback: ${rated.size} rated answer(s) written to ${out.path}")
+    return out.path
+  }
+
   fun checkFacts(answerId: Long) {
     if (!canSend()) return
     if (!prefs.webSearch) {

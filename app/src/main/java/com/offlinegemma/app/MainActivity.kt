@@ -105,6 +105,8 @@ class MainActivity : ComponentActivity() {
     // Test bench (mobile/evals): `--es eval_case eval_case.json` (a file in the app's files dir).
     intent.getStringExtra("eval_case")?.let { src -> runEvalCase(src) }
     intent.getStringExtra("go")?.let { runCatching { screenState.value = Screen.valueOf(it.uppercase()) } }
+    // Review the thumbs: writes every rated answer to the app's files dir and logs the path.
+    if (intent.hasExtra("feedback")) android.util.Log.i("Feedback", app.chat.exportFeedback())
     intent.getStringExtra("theme")?.let { runCatching { app.prefs.theme = ThemeChoice.valueOf(it.uppercase()) } }
     if (intent.hasExtra("onboarded")) app.prefs.onboarded = intent.getBooleanExtra("onboarded", true)
     if (intent.hasExtra("download")) ModelDownloadWorker.start(this, app.prefs.wifiOnly)
