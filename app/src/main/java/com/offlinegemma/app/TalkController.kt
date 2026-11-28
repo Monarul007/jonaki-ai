@@ -291,11 +291,18 @@ class TalkController(private val context: Context, private val chat: ChatControl
     private const val PRE_FRAMES = 11 // ~0.35 s kept from before speech starts
 
     /**
-     * How long to wait before acknowledging out loud. Below this the answer arrives on its own and a
-     * holding line would just talk over it; the measured no-search path is ~10 s, so this fires on
-     * anything that is actually going to make the person wait.
+     * How long to wait before acknowledging out loud.
+     *
+     * This is an absolute wait, not a wait measured from "the person stopped talking": the clock
+     * starts when preparation begins, which is already ~0.5 s after the last syllable. So what the
+     * person experiences is this value plus that ~0.5 s — 2.5 s read as the 3.0 s they complained
+     * about ("reduce 2.65 s wait").
+     *
+     * 1.8 s puts it back at ~2.3 s: still long enough that a fast answer is not talked over, short
+     * enough that the silence stops feeling like a stall. Do not raise this back without re-measuring
+     * from the *end of speech*, which is what the person is actually timing.
      */
-    private const val HOLD_AFTER_MS = 2500L
+    private const val HOLD_AFTER_MS = 1800L
 
     /** 16 kHz mono 16-bit WAV (LiteRT-LM reads WAV directly). */
     fun encodeWav(chunks: List<ShortArray>): ByteArray {
